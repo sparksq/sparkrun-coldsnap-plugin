@@ -68,7 +68,10 @@ copies the selected host, links this checkout's live plugin source into its
 `sparkrun.plugins` tree, and adds the `plugins.coldsnap` feature binding when
 the selected host does not have it yet. The original host checkout is never
 modified. The script installs the assembled host and this plugin as editable
-packages, activates the virtual environment, and installs the pre-commit hooks.
+packages, activates the virtual environment, updates all enabled recipe
+registries (including plugin-declared registries), and installs the pre-commit
+hooks. As with sparkrun's normal install and upgrade flows, a registry update
+failure is reported but does not fail environment setup.
 
 The disposable assembly deliberately exercises sparkrun's in-tree loader. The
 plugin and its registry declarations therefore have the same in-tree provenance

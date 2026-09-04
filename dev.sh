@@ -129,6 +129,11 @@ _sparkrun_coldsnap_dev_setup() {
     # shellcheck disable=SC1091
     source "$venv_dir/bin/activate" || return 1
 
+    echo "Updating recipe registries ..."
+    if ! "$venv_dir/bin/sparkrun" registry update; then
+        echo "Warning: registry update failed (non-fatal)." >&2
+    fi
+
     echo "Installing pre-commit hooks ..."
     if ! (cd "$script_dir" && "$venv_dir/bin/pre-commit" install); then
         echo "Warning: pre-commit hook installation failed." >&2

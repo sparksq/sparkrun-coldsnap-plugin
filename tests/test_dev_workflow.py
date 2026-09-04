@@ -37,8 +37,15 @@ def _development_tree(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     _checkout(managed)
 
     venv_bin = plugin / ".venv" / "bin"
+    sparkrun_log = tmp_path / "sparkrun.log"
     _executable(venv_bin / "python", "exit 0\n")
     _executable(venv_bin / "pre-commit", "exit 0\n")
+    _executable(
+        venv_bin / "sparkrun",
+        """printf '%s\\n' "$*" >> "$FAKE_SPARKRUN_LOG"
+exit "${FAKE_SPARKRUN_STATUS:-0}"
+""",
+    )
     (venv_bin / "activate").write_text(":\n", encoding="utf-8")
 
     fake_bin = tmp_path / "bin"
@@ -59,6 +66,7 @@ exit 0
         "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
         "FAKE_GIT_LOG": str(git_log),
         "FAKE_GIT_ORIGIN": REPOSITORY,
+        "FAKE_SPARKRUN_LOG": str(sparkrun_log),
     }
     return plugin, git_log, env
 
@@ -99,6 +107,10 @@ printf 'dev_checkout=%s\\n' "$SPARKRUN_DEV_CHECKOUT"
     calls = git_log.read_text(encoding="utf-8")
     assert "fetch --prune origin main" in calls
     assert "fetch --prune origin develop-next" in calls
+    assert Path(env["FAKE_SPARKRUN_LOG"]).read_text(encoding="utf-8").splitlines() == [
+        "registry update",
+        "registry update",
+    ]
 
 
 def test_a_different_explicit_checkout_still_takes_precedence(tmp_path: Path):
@@ -138,3 +150,24 @@ printf 'dev_checkout=%s\\n' "$SPARKRUN_DEV_CHECKOUT"
     assert "dev_checkout=%s" % (plugin / ".dev" / "sparkrun-with-coldsnap") in result.stdout
     calls = git_log.read_text(encoding="utf-8") if git_log.exists() else ""
     assert "fetch --prune" not in calls
+    assert Path(env["FAKE_SPARKRUN_LOG"]).read_text(encoding="utf-8").splitlines() == ["registry update"]
+
+
+def test_registry_update_failure_is_nonfatal(tmp_path: Path):
+    plugin, _git_log, env = _development_tree(tmp_path)
+
+    result = subprocess.run(
+        ["bash", "-c", 'set -e\nsource "$PLUGIN_ROOT/dev.sh"'],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **env,
+            "PLUGIN_ROOT": str(plugin),
+            "FAKE_SPARKRUN_STATUS": "17",
+        },
+    )
+
+    assert result.returncode == 0
+    assert "Warning: registry update failed (non-fatal)." in result.stderr
+    assert Path(env["FAKE_SPARKRUN_LOG"]).read_text(encoding="utf-8").splitlines() == ["registry update"]
