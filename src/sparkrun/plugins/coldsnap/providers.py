@@ -109,7 +109,7 @@ def _is_content_addressed_model_payload(value: dict[str, Any]) -> bool:
 
 
 def resolve_request_weight_mode(request: dict[str, Any]) -> str:
-    """Resolve an omitted mode only for Sparkrun's pre-ColdSnap asset staging."""
+    """Resolve an omitted mode only for sparkrun's pre-ColdSnap asset staging."""
 
     weights = request.get("policy", {}).get("weights", {})
     declared = weights.get("mode")
@@ -156,7 +156,7 @@ def _stage_payload_verifier(
         created = session.execute(host, ["install", "-d", "-m", "0700", root], timeout=60)
         if created.returncode != 0:
             # Docker may have created a missing cache bind as root during an
-            # older launch. Use Sparkrun's scoped, non-interactive ownership
+            # older launch. Use sparkrun's scoped, non-interactive ownership
             # repair and retry once before reporting the actual write failure.
             from sparkrun.orchestration.sudo import ensure_remote_dir_ownership
 
@@ -240,7 +240,7 @@ def stage_native_packs(
     if prepared.get("operation") != "restore":
         return StageOutcome(prepared, mode)
     if mode == "recovery":
-        # An omitted n580 vLLM mode is a Sparkrun policy decision.  Make it
+        # An omitted n580 vLLM mode is a sparkrun policy decision.  Make it
         # explicit before handing the request to ColdSnap so the coordinator
         # cannot independently resolve the omission back to auto.
         weights["mode"] = "recovery"

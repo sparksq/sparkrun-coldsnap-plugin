@@ -2870,8 +2870,8 @@ def test_coldsnap_recipe_rejects_sparkrun_and_runtime_owned_env():
     )
 
     issues = recipe.validate()
-    assert any("Sparkrun-owned communication variables: NCCL_IB_HCA" in issue for issue in issues)
-    assert any("Sparkrun-owned runtime variables: HF_HUB_OFFLINE" in issue for issue in issues)
+    assert any("sparkrun-owned communication variables: NCCL_IB_HCA" in issue for issue in issues)
+    assert any("sparkrun-owned runtime variables: HF_HUB_OFFLINE" in issue for issue in issues)
     assert any("ColdSnap-owned runtime variables:" in issue for issue in issues)
     assert any("NCCL_CUMEM_ENABLE" in issue for issue in issues)
     assert any("COLDSNAP_RECOVERY_LOADER_BACKEND" in issue for issue in issues)

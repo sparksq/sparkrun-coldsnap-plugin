@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/coldsnap/LICENSE_EXCEPTION.
 
-"""Run the plugin source against an installed or checked-out SparkRun host."""
+"""Run the plugin source against an installed or checked-out sparkrun host."""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ SPARKRUN_CHECKOUT = os.environ.get("SPARKRUN_CHECKOUT")
 if SPARKRUN_CHECKOUT:
     host_source = Path(SPARKRUN_CHECKOUT).expanduser().resolve() / "src"
     if not (host_source / "sparkrun" / "__init__.py").is_file():
-        raise RuntimeError("SPARKRUN_CHECKOUT does not point to a SparkRun checkout: %s" % SPARKRUN_CHECKOUT)
+        raise RuntimeError("SPARKRUN_CHECKOUT does not point to a sparkrun checkout: %s" % SPARKRUN_CHECKOUT)
     sys.path.insert(0, str(host_source))
 
 try:
     import sparkrun.plugins
 except ImportError as error:
     raise RuntimeError(
-        "ColdSnap plugin tests require SparkRun; install it or set SPARKRUN_CHECKOUT"
+        "ColdSnap plugin tests require sparkrun; install it or set SPARKRUN_CHECKOUT"
     ) from error
 
 plugin_parent = str(ROOT / "src" / "sparkrun" / "plugins")

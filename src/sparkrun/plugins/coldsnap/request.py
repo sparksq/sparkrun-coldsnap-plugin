@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/coldsnap/LICENSE_EXCEPTION.
 
-"""Translate a Sparkrun plan and ``coldsnap:`` item into ColdSnap JSON."""
+"""Translate a sparkrun plan and ``coldsnap:`` item into ColdSnap JSON."""
 
 from __future__ import annotations
 
@@ -214,7 +214,7 @@ _VALID_OPERATION_ID = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 def _coldsnap_command(command, engine: str) -> list[str]:
     values = list(command)
     if len(values) < 5 or values[:4] != ["bash", "--noprofile", "--norc", "-c"]:
-        raise ValueError("ColdSnap requires Sparkrun's resolved Bash command envelope")
+        raise ValueError("ColdSnap requires sparkrun's resolved Bash command envelope")
     text = values[4].rstrip()
     if engine == "vllm" and not re.search(r"(?<!\S)--enable-sleep-mode(?:\s|$)", text):
         text += " --enable-sleep-mode"

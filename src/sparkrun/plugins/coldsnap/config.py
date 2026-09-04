@@ -186,10 +186,10 @@ class ColdSnapRecipeHandler:
         recipe_env = set(recipe.env or {})
         cluster_owned = sorted(recipe_env & SPARKRUN_OWNED_COMM_ENV)
         if cluster_owned:
-            issues.append("env must not set Sparkrun-owned communication variables: %s" % ", ".join(cluster_owned))
+            issues.append("env must not set sparkrun-owned communication variables: %s" % ", ".join(cluster_owned))
         sparkrun_runtime_owned = sorted(recipe_env & SPARKRUN_OWNED_RUNTIME_ENV)
         if sparkrun_runtime_owned:
-            issues.append("env must not set Sparkrun-owned runtime variables: %s" % ", ".join(sparkrun_runtime_owned))
+            issues.append("env must not set sparkrun-owned runtime variables: %s" % ", ".join(sparkrun_runtime_owned))
         runtime_owned = sorted(recipe_env & COLDSNAP_OWNED_RUNTIME_ENV)
         if runtime_owned:
             issues.append("env must not set ColdSnap-owned runtime variables: %s" % ", ".join(runtime_owned))
@@ -237,7 +237,7 @@ class ColdSnapRecipeHandler:
         return issues
 
     def export(self, value: ColdSnapRecipe, recipe) -> dict[str, Any]:
-        # This normalized form is part of Sparkrun's recipe fingerprint and
+        # This normalized form is part of sparkrun's recipe fingerprint and
         # therefore the artifact lookup key. Keep its pre-driver defaults
         # stable. build_request() uses the typed optional fields directly and
         # omits values the recipe did not declare, so this compatibility export

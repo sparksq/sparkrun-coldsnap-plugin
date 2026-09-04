@@ -300,7 +300,7 @@ class ColdSnapService:
         artifact_driver = artifact.get("snapshot_driver", {}).get("id")
         if artifact_driver != snapshot_driver:
             raise RuntimeError(
-                "ColdSnap artifact uses snapshot driver %s, but Sparkrun selected %s" % (artifact_driver or "<missing>", snapshot_driver)
+                "ColdSnap artifact uses snapshot driver %s, but sparkrun selected %s" % (artifact_driver or "<missing>", snapshot_driver)
             )
         return RestoreDescriptor(request=request, artifact=artifact)
 
@@ -386,7 +386,7 @@ class ColdSnapService:
         if receipt.get("kind") != "coldsnap-restore-preparation" or receipt.get("operation_id") != state.request["id"]:
             raise RuntimeError("ColdSnap prepare-only receipt does not match this restore")
         if receipt.get("provider") != state.selected_mode:
-            raise RuntimeError("ColdSnap selected %s weights after Sparkrun prepared %s" % (receipt.get("provider"), state.selected_mode))
+            raise RuntimeError("ColdSnap selected %s weights after sparkrun prepared %s" % (receipt.get("provider"), state.selected_mode))
         if receipt.get("snapshot_driver", {}).get("id") != state.request["snapshot_driver"]["id"]:
             raise RuntimeError("ColdSnap prepare-only receipt returned a different snapshot driver")
         return RestoreActivationReceipt(request=state.request, receipt=receipt)
@@ -411,7 +411,7 @@ class ColdSnapService:
         )
         # Preserve the exact staged inventory selected before shared launch
         # assets were prepared. Re-materialization above is only for the final
-        # Sparkrun-owned communication environment.
+        # sparkrun-owned communication environment.
         request["policy"]["weights"] = deepcopy(state.request["policy"]["weights"])
         request["policy"]["weights"]["mode"] = state.selected_mode
         return RestoreActivationReceipt(request=request, receipt=prepared_capsules.receipt)
@@ -875,7 +875,7 @@ class ColdSnapService:
                 environment = {**os.environ, **explicit_environment}
         else:
             if sctx is None:
-                raise RuntimeError("ColdSnap managed controller resolution requires a Sparkrun context")
+                raise RuntimeError("ColdSnap managed controller resolution requires a sparkrun context")
             tool = self.tool_resolver(sctx.config)
             executable = str(tool.path)
             environment = {**os.environ, **tool.environment}
@@ -899,7 +899,7 @@ class ColdSnapService:
                 site_policy.recovery_read,
             )
         # Direct ColdSnap invocation retains its controller-owned token path.
-        # Under Sparkrun, credentialed operations are performed by the
+        # Under sparkrun, credentialed operations are performed by the
         # operation-scoped host provider and the token never enters ColdSnap's
         # process environment.
         if request["operation"] == "publish-native" and cluster is None:
@@ -974,7 +974,7 @@ class ColdSnapService:
                 if provider is not None:
                     environment = {**os.environ, **(environment or {}), **provider.environment}
                     # Credentialed provider operations resolve controller secrets
-                    # inside Sparkrun. Do not leak those credentials into either
+                    # inside sparkrun. Do not leak those credentials into either
                     # the ColdSnap controller or its engine-adapter child.
                     environment.pop("HF_TOKEN", None)
                     environment.pop("HUGGING_FACE_HUB_TOKEN", None)

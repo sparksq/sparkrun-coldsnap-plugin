@@ -107,12 +107,12 @@ COLDSNAP_PY
         result = run_script_on_host(host, program, ssh_kwargs=ssh_kwargs, timeout=30)
         if not result.success:
             raise RuntimeError(
-                "resolve remote Sparkrun cache on %s: %s" % (host, result.stderr.strip() or result.stdout.strip() or "probe failed")
+                "resolve remote sparkrun cache on %s: %s" % (host, result.stderr.strip() or result.stdout.strip() or "probe failed")
             )
         line = next((value for value in result.stdout.splitlines() if value.startswith("COLDSNAP_CACHE ")), "")
         if not line:
-            raise RuntimeError("remote Sparkrun cache probe returned no path on %s" % host)
-        roots[host] = _absolute(str(json.loads(line.removeprefix("COLDSNAP_CACHE "))), "remote Sparkrun cache")
+            raise RuntimeError("remote sparkrun cache probe returned no path on %s" % host)
+        roots[host] = _absolute(str(json.loads(line.removeprefix("COLDSNAP_CACHE "))), "remote sparkrun cache")
     unique = set(roots.values())
     if len(unique) != 1:
         raise RuntimeError("ColdSnap requires one common remote state path; resolved %s" % roots)

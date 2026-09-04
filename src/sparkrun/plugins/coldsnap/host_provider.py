@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/coldsnap/LICENSE_EXCEPTION.
 
-"""Operation-scoped ColdSnap host-provider backed by Sparkrun transports."""
+"""Operation-scoped ColdSnap host-provider backed by sparkrun transports."""
 
 from __future__ import annotations
 

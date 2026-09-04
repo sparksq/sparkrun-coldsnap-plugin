@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/coldsnap/LICENSE_EXCEPTION.
 
-"""Bridge Sparkrun's persistent runtime cache into portable ColdSnap capsules."""
+"""Bridge sparkrun's persistent runtime cache into portable ColdSnap capsules."""
 
 from __future__ import annotations
 

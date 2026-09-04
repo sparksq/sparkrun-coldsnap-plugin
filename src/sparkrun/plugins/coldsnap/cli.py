@@ -52,7 +52,7 @@ def build_command():
             "--timings/--no-timings",
             "show_timings",
             default=True,
-            help="Show merged Sparkrun and ColdSnap timings.",
+            help="Show merged sparkrun and ColdSnap timings.",
         )(command)
         command = click.option(
             "--coldsnap-binary",
@@ -811,7 +811,7 @@ def _run(
 
 
 def _resolve_comm_env(plan, sctx):
-    """Resolve Sparkrun-owned per-host transport settings for ColdSnap."""
+    """Resolve sparkrun-owned per-host transport settings for ColdSnap."""
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 

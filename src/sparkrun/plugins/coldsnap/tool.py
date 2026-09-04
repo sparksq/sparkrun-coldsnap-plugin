@@ -7,11 +7,11 @@
 
 ColdSnap execution needs the engine-neutral ``coldsnap`` controller and its
 matching vLLM and SGLang adapters. Runtime
-images contain their own copies, but Sparkrun must not depend on a developer
+images contain their own copies, but sparkrun must not depend on a developer
 checkout being present on the controller's ``PATH``.
 
 Release assets are fetched from one pinned GitHub release, verified against its
-``checksums.txt``, and installed atomically under Sparkrun's cache directory.
+``checksums.txt``, and installed atomically under sparkrun's cache directory.
 Private repositories are supported through ``GH_TOKEN``/``GITHUB_TOKEN`` or an
 existing ``gh auth login`` session. As a temporary pre-publication fallback,
 an API authorization failure can build the exact pinned tag over Git/SSH in a
