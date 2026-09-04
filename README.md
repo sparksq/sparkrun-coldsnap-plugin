@@ -11,6 +11,8 @@ ColdSnap integration. Released sparkrun distributions vendor an immutable
 snapshot of this repository; they do not clone or install it at build time or
 runtime.
 
+Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
+
 The plugin is imported by sparkrun as `sparkrun.plugins.coldsnap` and remains
 subject to sparkrun's `plugins.coldsnap` feature gate. The source repository
 and exact commit included by a sparkrun release are recorded in that release's
