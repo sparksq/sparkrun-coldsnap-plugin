@@ -12,6 +12,7 @@ import subprocess
 import tarfile
 import urllib.error
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,12 +29,14 @@ from sparkrun.plugins.coldsnap.tool import (
     _settings,
     ensure_controller_tool,
     install_controller_tool,
+    install_controller_tool_from_oci,
     install_controller_tool_from_ssh,
 )
 
 VERSION = "0.3.13"
 COMMIT = "a" * 40
 REPOSITORY = "sparksq/coldsnap"
+OCI_REPOSITORY = "docker.io/scitrera/coldsnap-binaries"
 GO_VERSION = "1.25.14"
 GO_BUILDER_IMAGE = "golang:1.25.14@sha256:699337d620559a59b4a2bb298ad59611e535d2ee755a34cf2d2a98f37578dc80"
 
@@ -166,8 +169,8 @@ def test_private_release_404_is_classified_for_temporary_ssh_fallback(monkeypatc
         _fetch_release(REPOSITORY, VERSION, token="")
 
 
-def test_ensure_controller_falls_back_only_for_release_access_error(tmp_path, monkeypatch):
-    expected = ControllerTool(tmp_path / "coldsnap", tmp_path / "adapter", VERSION, "git-build", tmp_path / "sglang")
+def test_ensure_controller_falls_back_to_oci_before_source_build(tmp_path, monkeypatch):
+    expected = ControllerTool(tmp_path / "coldsnap", tmp_path / "adapter", VERSION, "oci", tmp_path / "sglang")
     calls = []
     monkeypatch.setattr(coldsnap_tool, "_platform", lambda: ("linux", "amd64"))
     monkeypatch.setattr(coldsnap_tool, "_verify_cached", lambda *_args: None)
@@ -175,6 +178,39 @@ def test_ensure_controller_falls_back_only_for_release_access_error(tmp_path, mo
         coldsnap_tool,
         "install_controller_tool",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ColdSnapReleaseAccessError("private release")),
+    )
+    monkeypatch.setattr(
+        coldsnap_tool,
+        "install_controller_tool_from_oci",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or expected,
+    )
+    monkeypatch.setattr(
+        coldsnap_tool,
+        "install_controller_tool_from_ssh",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("source build should not run")),
+    )
+
+    actual = ensure_controller_tool(_config(tmp_path, {"version": VERSION, "commit": COMMIT}))
+
+    assert actual is expected
+    assert calls[0][0][1:6] == (VERSION, REPOSITORY, OCI_REPOSITORY, "linux", "amd64")
+    assert calls[0][1] == {"commit": COMMIT}
+
+
+def test_ensure_controller_falls_back_to_source_when_release_and_oci_fail(tmp_path, monkeypatch):
+    expected = ControllerTool(tmp_path / "coldsnap", tmp_path / "adapter", VERSION, "git-build", tmp_path / "sglang")
+    calls = []
+    monkeypatch.setattr(coldsnap_tool, "_platform", lambda: ("linux", "amd64"))
+    monkeypatch.setattr(coldsnap_tool, "_verify_cached", lambda *_args: None)
+    monkeypatch.setattr(
+        coldsnap_tool,
+        "install_controller_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ColdSnapToolError("checksum mismatch")),
+    )
+    monkeypatch.setattr(
+        coldsnap_tool,
+        "install_controller_tool_from_oci",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ColdSnapToolError("image unavailable")),
     )
     monkeypatch.setattr(
         coldsnap_tool,
@@ -186,17 +222,105 @@ def test_ensure_controller_falls_back_only_for_release_access_error(tmp_path, mo
 
     assert actual is expected
     assert calls[0][0][1:5] == (VERSION, REPOSITORY, "linux", "amd64")
-    assert calls[0][1] == {"commit": COMMIT}
 
-    monkeypatch.setattr(
-        coldsnap_tool,
-        "install_controller_tool",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(ColdSnapToolError("checksum mismatch")),
+
+def _write_oci_bundle(destination, *, version=VERSION, commit=COMMIT):
+    payloads = {
+        "coldsnap": _controller_script(version, commit),
+        "coldsnap-vllm-adapter": b"#!/bin/sh\nexit 0\n",
+        "coldsnap-sglang-adapter": b"#!/bin/sh\nexit 0\n",
+        "coldsnap-criu-rpc": b"#!/bin/sh\nexit 0\n",
+    }
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, payload in payloads.items():
+        (destination / name).write_bytes(payload)
+    (destination / "manifest.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "kind": "coldsnap-controller-binary-bundle",
+                "version": version,
+                "commit": commit,
+                "platform": "linux-amd64",
+                "sha256": {name: hashlib.sha256(payload).hexdigest() for name, payload in payloads.items()},
+            }
+        )
     )
-    calls.clear()
-    with pytest.raises(ColdSnapToolError, match="checksum mismatch"):
-        ensure_controller_tool(_config(tmp_path, {"version": VERSION, "commit": COMMIT}))
-    assert calls == []
+
+
+def test_install_controller_tool_from_oci_verifies_and_caches_bundle(tmp_path, monkeypatch):
+    real_run = subprocess.run
+    calls = []
+    monkeypatch.setattr(coldsnap_tool.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+
+    def run(arguments, **kwargs):
+        if arguments[0] != "/usr/bin/docker":
+            return real_run(arguments, **kwargs)
+        calls.append(arguments)
+        command = arguments[1]
+        if command == "pull":
+            return subprocess.CompletedProcess(arguments, 0, "pulled\n", "")
+        if command == "image":
+            resolved = "scitrera/coldsnap-binaries@sha256:" + "b" * 64
+            return subprocess.CompletedProcess(arguments, 0, json.dumps([resolved]), "")
+        if command == "create":
+            return subprocess.CompletedProcess(arguments, 0, "bundle-container\n", "")
+        if command == "cp":
+            _write_oci_bundle(Path(arguments[-1]))
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        if command == "rm":
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(coldsnap_tool.subprocess, "run", run)
+
+    tool = install_controller_tool_from_oci(
+        tmp_path,
+        VERSION,
+        REPOSITORY,
+        OCI_REPOSITORY,
+        "linux",
+        "amd64",
+        commit=COMMIT,
+    )
+
+    assert tool.source == "oci"
+    assert tool.path.is_file()
+    manifest = json.loads(tool.path.with_name("manifest.json").read_text())
+    assert manifest["oci"] == {
+        "reference": OCI_REPOSITORY + ":" + VERSION,
+        "resolved": "scitrera/coldsnap-binaries@sha256:" + "b" * 64,
+    }
+    assert [arguments[1] for arguments in calls] == ["pull", "image", "create", "cp", "rm"]
+
+
+def test_install_controller_tool_from_oci_rejects_wrong_commit(tmp_path, monkeypatch):
+    real_run = subprocess.run
+    monkeypatch.setattr(coldsnap_tool.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+
+    def run(arguments, **kwargs):
+        if arguments[0] != "/usr/bin/docker":
+            return real_run(arguments, **kwargs)
+        if arguments[1] == "image":
+            return subprocess.CompletedProcess(arguments, 0, json.dumps([OCI_REPOSITORY + "@sha256:" + "b" * 64]), "")
+        if arguments[1] == "create":
+            return subprocess.CompletedProcess(arguments, 0, "bundle-container\n", "")
+        if arguments[1] == "cp":
+            _write_oci_bundle(Path(arguments[-1]), commit="c" * 40)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(coldsnap_tool.subprocess, "run", run)
+
+    with pytest.raises(ColdSnapToolError, match="does not match release"):
+        install_controller_tool_from_oci(
+            tmp_path,
+            VERSION,
+            REPOSITORY,
+            OCI_REPOSITORY,
+            "linux",
+            "amd64",
+            commit=COMMIT,
+        )
 
 
 def test_ssh_fallback_installs_verified_source_built_tools(tmp_path, monkeypatch):
@@ -346,7 +470,7 @@ def test_controller_settings_are_read_from_plugin_namespace(tmp_path):
 
     config = SparkrunConfig(config_path=config_file)
 
-    assert _settings(config) == (VERSION, COMMIT, "internal/coldsnap", "", False)
+    assert _settings(config) == (VERSION, COMMIT, "internal/coldsnap", OCI_REPOSITORY, "", False)
 
 
 def test_service_binds_managed_adapter_environment(tmp_path):

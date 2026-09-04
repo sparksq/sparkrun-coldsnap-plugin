@@ -12,10 +12,10 @@ checkout being present on the controller's ``PATH``.
 
 Release assets are fetched from one pinned GitHub release, verified against its
 ``checksums.txt``, and installed atomically under sparkrun's cache directory.
-Private repositories are supported through ``GH_TOKEN``/``GITHUB_TOKEN`` or an
-existing ``gh auth login`` session. As a temporary pre-publication fallback,
-an API authorization failure can build the exact pinned tag over Git/SSH in a
-pinned Go container.
+If that transport is unavailable, sparkrun extracts the same release from a
+multi-architecture OCI binary bundle before falling back to building the exact
+pinned tag over Git/SSH in a pinned Go container. Every path verifies the
+release version, source commit, platform, and binary hashes before use.
 """
 
 from __future__ import annotations
@@ -46,11 +46,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONTROLLER_COMMIT = "ad537313ce1897f6cc92abdc8861c87f29918695"
 DEFAULT_RELEASE_REPOSITORY = "sparksq/coldsnap"
+DEFAULT_BINARY_OCI_REPOSITORY = "docker.io/scitrera/coldsnap-binaries"
 _DOWNLOAD_TIMEOUT = 60
+_OCI_TIMEOUT = 10 * 60
 _VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_OCI_REPOSITORY = re.compile(r"^[a-z0-9]+(?:[._:-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_OCI_BUNDLE_KIND = "coldsnap-controller-binary-bundle"
+_OCI_BUNDLE_ROOT = "/opt/coldsnap/bin"
 _BINARIES = (
     "coldsnap",
     "coldsnap-vllm-adapter",
@@ -117,13 +122,14 @@ def _platform() -> tuple[str, str]:
     raise ColdSnapToolError("ColdSnap controller releases do not support architecture %s" % machine)
 
 
-def _settings(config: Any) -> tuple[str, str, str, str, bool]:
+def _settings(config: Any) -> tuple[str, str, str, str, str, bool]:
     plugin = config.plugin_settings("coldsnap")
     raw = plugin.get("controller", {}) if isinstance(plugin, Mapping) else {}
     values = raw if isinstance(raw, Mapping) else {}
     version = str(values.get("version") or DEFAULT_CONTROLLER_VERSION).removeprefix("v")
     commit = str(values.get("commit") or DEFAULT_CONTROLLER_COMMIT)
     repository = str(values.get("repository") or DEFAULT_RELEASE_REPOSITORY)
+    oci_repository = str(values.get("oci_repository") or DEFAULT_BINARY_OCI_REPOSITORY)
     path = str(values.get("path") or "")
     download = values.get("download", True)
     if not _VERSION.fullmatch(version):
@@ -132,9 +138,11 @@ def _settings(config: Any) -> tuple[str, str, str, str, bool]:
         raise ColdSnapToolError("plugins.coldsnap.controller.commit must be a full lowercase Git commit")
     if not _REPOSITORY.fullmatch(repository):
         raise ColdSnapToolError("plugins.coldsnap.controller.repository must be an owner/repository GitHub name")
+    if not _OCI_REPOSITORY.fullmatch(oci_repository):
+        raise ColdSnapToolError("plugins.coldsnap.controller.oci_repository must be an untagged OCI repository")
     if not isinstance(download, bool):
         raise ColdSnapToolError("plugins.coldsnap.controller.download must be a boolean")
-    return version, commit, repository, path, download
+    return version, commit, repository, oci_repository, path, download
 
 
 def _resolve_explicit(path: str, version: str) -> ControllerTool:
@@ -643,8 +651,146 @@ def install_controller_tool(
     )
 
 
+def _docker_command(arguments: list[str], *, timeout: int = _OCI_TIMEOUT) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(arguments, check=False, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ColdSnapToolError("ColdSnap OCI binary-bundle command failed: %s" % error) from error
+    if result.returncode != 0:
+        raise ColdSnapToolError("ColdSnap OCI binary-bundle command failed: %s" % _command_detail(result))
+    return result
+
+
+def _canonical_oci_repository(repository: str) -> str:
+    """Normalize Docker Hub's optional registry prefix for digest comparison."""
+    return repository.removeprefix("docker.io/").removeprefix("index.docker.io/")
+
+
+def _read_oci_bundle(root: Path, version: str, commit: str, os_name: str, arch: str) -> dict[str, bytes]:
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_symlink():
+        raise ColdSnapToolError("ColdSnap OCI binary-bundle manifest must be a regular file")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ColdSnapToolError("ColdSnap OCI binary-bundle manifest is invalid: %s" % error) from error
+    expected_platform = "%s-%s" % (os_name, arch)
+    if (
+        manifest.get("format") != 1
+        or manifest.get("kind") != _OCI_BUNDLE_KIND
+        or manifest.get("version") != version
+        or manifest.get("commit") != commit
+        or manifest.get("platform") != expected_platform
+    ):
+        raise ColdSnapToolError("ColdSnap OCI binary bundle does not match release v%s at %s for %s" % (version, commit, expected_platform))
+    hashes = manifest.get("sha256")
+    if not isinstance(hashes, dict) or set(hashes) != set(_BINARIES):
+        raise ColdSnapToolError("ColdSnap OCI binary-bundle hash inventory is invalid")
+    payloads: dict[str, bytes] = {}
+    for name in _BINARIES:
+        path = root / name
+        expected = hashes.get(name)
+        if path.is_symlink() or not path.is_file() or not isinstance(expected, str) or not _SHA256.fullmatch(expected):
+            raise ColdSnapToolError("ColdSnap OCI binary bundle has an invalid %s entry" % name)
+        payload = path.read_bytes()
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != expected:
+            raise ColdSnapToolError("ColdSnap OCI binary-bundle checksum mismatch for %s: expected %s, got %s" % (name, expected, actual))
+        payloads[name] = payload
+    return payloads
+
+
+def install_controller_tool_from_oci(
+    cache_dir: str | Path,
+    version: str,
+    repository: str,
+    oci_repository: str,
+    os_name: str,
+    arch: str,
+    *,
+    commit: str = DEFAULT_CONTROLLER_COMMIT,
+) -> ControllerTool:
+    """Install one architecture-matched, manifest-verified OCI binary bundle."""
+    docker = shutil.which("docker")
+    if not docker:
+        raise ColdSnapToolError("ColdSnap OCI binary-bundle fallback requires docker")
+    image = "%s:%s" % (oci_repository, version)
+    platform_name = "%s/%s" % (os_name, arch)
+    logger.log(PROGRESS, "ColdSnap: pulling controller binary bundle %s for %s", image, platform_name)
+    with progress_heartbeat(logger, "ColdSnap: pulling controller binary bundle"):
+        _docker_command([docker, "pull", "--platform", platform_name, image])
+    inspect = _docker_command([docker, "image", "inspect", "--format", "{{json .RepoDigests}}", image])
+    try:
+        repo_digests = json.loads(inspect.stdout)
+    except json.JSONDecodeError as error:
+        raise ColdSnapToolError("ColdSnap OCI binary bundle has no readable repository digest") from error
+    expected_repository = _canonical_oci_repository(oci_repository)
+    resolved = ""
+    if isinstance(repo_digests, list):
+        for value in repo_digests:
+            if not isinstance(value, str):
+                continue
+            candidate_repository, separator, digest = value.rpartition("@sha256:")
+            if separator and _canonical_oci_repository(candidate_repository) == expected_repository and _SHA256.fullmatch(digest):
+                resolved = value
+                break
+    if not resolved:
+        raise ColdSnapToolError("ColdSnap OCI binary bundle has no immutable repository digest")
+
+    with tempfile.TemporaryDirectory(prefix="sparkrun-coldsnap-oci-") as temporary:
+        bundle = Path(temporary) / "bundle"
+        bundle.mkdir()
+        created = _docker_command([docker, "create", "--platform", platform_name, image])
+        container = created.stdout.strip()
+        if not container or any(character.isspace() for character in container):
+            raise ColdSnapToolError("ColdSnap OCI binary bundle returned an invalid container ID")
+        try:
+            _docker_command([docker, "cp", "%s:%s/." % (container, _OCI_BUNDLE_ROOT), str(bundle)])
+        finally:
+            try:
+                _docker_command([docker, "rm", "-f", container], timeout=30)
+            except ColdSnapToolError:
+                logger.warning("ColdSnap: could not remove temporary binary-bundle container %s", container)
+        payloads = _read_oci_bundle(bundle, version, commit, os_name, arch)
+        root = _cache_path(cache_dir, version, os_name, arch)
+        binary_digests: dict[str, str] = {}
+        for name, payload in payloads.items():
+            binary_digests[name] = hashlib.sha256(payload).hexdigest()
+            _atomic_write(
+                root / name,
+                payload,
+                stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
+            )
+        cache_manifest = {
+            "format": 1,
+            "version": version,
+            "commit": commit,
+            "repository": repository,
+            "platform": "%s-%s" % (os_name, arch),
+            "sha256": binary_digests,
+            "archives": {},
+            "oci": {"reference": image, "resolved": resolved},
+        }
+        _atomic_write(
+            root / "manifest.json",
+            (json.dumps(cache_manifest, indent=2, sort_keys=True) + "\n").encode(),
+            stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
+        )
+    installed = _verify_cached(root, version, commit)
+    if installed is None:
+        raise ColdSnapToolError("OCI-installed ColdSnap controller v%s failed identity verification" % version)
+    return ControllerTool(
+        installed.path,
+        installed.adapter_path,
+        installed.version,
+        "oci",
+        installed.sglang_adapter_path,
+        installed.criu_rpc_path,
+    )
+
+
 def ensure_controller_tool(config: Any) -> ControllerTool:
-    version, commit, repository, configured_path, allow_download = _settings(config)
+    version, commit, repository, oci_repository, configured_path, allow_download = _settings(config)
     if configured_path:
         return _resolve_explicit(configured_path, version)
     os_name, arch = _platform()
@@ -657,22 +803,39 @@ def ensure_controller_tool(config: Any) -> ControllerTool:
     logger.log(PROGRESS, "ColdSnap: downloading controller v%s for %s/%s", version, os_name, arch)
     try:
         return install_controller_tool(config.cache_dir, version, repository, os_name, arch, commit=commit)
-    except ColdSnapReleaseAccessError as release_error:
+    except ColdSnapToolError as release_error:
         logger.log(
             PROGRESS,
-            "ColdSnap: release API access unavailable; using temporary pinned Git/SSH source-build fallback",
+            "ColdSnap: GitHub release acquisition failed; trying OCI binary bundle",
         )
         try:
-            return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit)
-        except ColdSnapToolError as build_error:
-            raise ColdSnapToolError(
-                "%s Temporary Git/SSH source-build fallback also failed: %s" % (release_error, build_error)
-            ) from build_error
+            return install_controller_tool_from_oci(
+                config.cache_dir,
+                version,
+                repository,
+                oci_repository,
+                os_name,
+                arch,
+                commit=commit,
+            )
+        except ColdSnapToolError as oci_error:
+            logger.log(
+                PROGRESS,
+                "ColdSnap: OCI binary-bundle acquisition failed; using temporary pinned Git/SSH source-build fallback",
+            )
+            try:
+                return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit)
+            except ColdSnapToolError as build_error:
+                raise ColdSnapToolError(
+                    "GitHub release acquisition failed: %s OCI binary-bundle acquisition failed: %s "
+                    "Temporary Git/SSH source-build fallback also failed: %s" % (release_error, oci_error, build_error)
+                ) from build_error
 
 
 __all__ = [
     "DEFAULT_CONTROLLER_COMMIT",
     "DEFAULT_CONTROLLER_VERSION",
+    "DEFAULT_BINARY_OCI_REPOSITORY",
     "DEFAULT_RELEASE_REPOSITORY",
     "ColdSnapReleaseAccessError",
     "ColdSnapToolError",
@@ -680,5 +843,6 @@ __all__ = [
     "ensure_controller_tool",
     "explicit_controller_environment",
     "install_controller_tool",
+    "install_controller_tool_from_oci",
     "install_controller_tool_from_ssh",
 ]

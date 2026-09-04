@@ -65,6 +65,34 @@ Changes are made and tested here first. sparkrun then imports an approved full
 commit with its `scripts/vendor-coldsnap.py` command. Files in sparkrun's
 vendored source and test directories should not be edited directly.
 
+## Controller acquisition
+
+The plugin resolves the release-pinned ColdSnap controller, vLLM adapter,
+SGLang adapter, and CRIU RPC helper as one verified tool set. It checks, in
+order:
+
+1. the local Sparkrun tool cache;
+2. the pinned GitHub release and its `checksums.txt`;
+3. `docker.io/scitrera/coldsnap-binaries:<version>` and its platform-specific
+   bundle manifest; and
+4. an exact source-tag build using Git/SSH and the source-pinned Go container.
+
+The OCI and source-build fallbacks require Docker on the Sparkrun control node.
+The public OCI bundle needs no registry credentials. Sites mirroring either
+source may override it without changing recipes:
+
+```yaml
+plugins:
+  coldsnap:
+    controller:
+      repository: sparksq/coldsnap
+      oci_repository: docker.io/scitrera/coldsnap-binaries
+```
+
+Every acquisition path verifies the configured release version and full Git
+commit, the target OS and architecture, and the SHA-256 digest of all four
+executables before activating the cache generation.
+
 ## Licensing
 
 The ColdSnap plugin is licensed under the GNU Affero General Public License
