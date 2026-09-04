@@ -33,11 +33,6 @@ _sparkrun_coldsnap_dev_setup() {
         return 1
     fi
 
-    if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
-        echo "SPARKRUN_BRANCH is not a valid Git branch name: $branch" >&2
-        return 1
-    fi
-
     if [[ -n "${SPARKRUN_CHECKOUT:-}" ]]; then
         checkout="$SPARKRUN_CHECKOUT"
         if [[ ! -d "$checkout" ]]; then
@@ -49,6 +44,11 @@ _sparkrun_coldsnap_dev_setup() {
     else
         checkout="$script_dir/.dev/sparkrun"
         managed_checkout=1
+
+        if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+            echo "SPARKRUN_BRANCH is not a valid Git branch name: $branch" >&2
+            return 1
+        fi
 
         if [[ -e "$checkout" && ! -d "$checkout/.git" ]]; then
             echo "Managed checkout path exists but is not a Git repository: $checkout" >&2
