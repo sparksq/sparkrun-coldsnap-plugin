@@ -8,8 +8,35 @@
 from __future__ import annotations
 
 import json
+import logging
 
+from sparkrun.core.progress import PROGRESS
 from sparkrun.plugins.coldsnap.service import ColdSnapService
+
+
+logger = logging.getLogger(__name__)
+
+
+def _version_identity() -> tuple[str, str]:
+    """Return the user-facing sparkrun and plugin versions."""
+    from sparkrun import __version__ as sparkrun_version
+    from sparkrun.plugins.coldsnap import __version__ as plugin_version
+
+    try:
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.core.version import display_version
+
+        sparkrun_version = display_version(SparkrunConfig())
+    except Exception:
+        pass
+    return sparkrun_version, plugin_version
+
+
+def _emit_version_banner() -> None:
+    """Report component identity without contaminating structured stdout."""
+    sparkrun_version, plugin_version = _version_identity()
+    logger.log(PROGRESS, "sparkrun v%s", sparkrun_version)
+    logger.log(PROGRESS, "ColdSnap plugin v%s", plugin_version)
 
 
 def _recipe_help(summary: str) -> str:
@@ -28,9 +55,28 @@ def build_command():
     output_path = click.Path(dir_okay=False, path_type=str)
     binary_path = click.Path(dir_okay=False, executable=True, path_type=str)
 
+    def print_version(ctx, _param, value):
+        if not value or ctx.resilient_parsing:
+            return
+        sparkrun_version, plugin_version = _version_identity()
+        click.echo("sparkrun v%s" % sparkrun_version)
+        click.echo("ColdSnap plugin v%s" % plugin_version)
+        ctx.exit()
+
     @click.group("coldsnap")
-    def group():
+    @click.option(
+        "--version",
+        is_flag=True,
+        is_eager=True,
+        expose_value=False,
+        callback=print_version,
+        help="Show sparkrun and ColdSnap plugin versions.",
+    )
+    @click.pass_context
+    def group(ctx):
         """Manage ColdSnap captures and restored workloads."""
+        if ctx.invoked_subcommand is not None:
+            _emit_version_banner()
 
     def common(command):
         command = click.argument("recipe", metavar="RECIPE", type=RECIPE_NAME)(command)

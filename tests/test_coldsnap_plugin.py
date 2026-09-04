@@ -21,6 +21,7 @@ import pytest
 import sparkrun.api as api
 from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.execution import ExecutionContext, resolve_recipe_execution, run_preparation_steps
+from sparkrun.core.progress import PROGRESS
 from sparkrun.core.recipe import Recipe
 from sparkrun.core.scheduler import RankAssignment, RankSlot
 from sparkrun.core.timing import Timeline
@@ -1163,6 +1164,38 @@ def test_coldsnap_cli_has_concise_help_for_every_command_and_option():
     assert path_options
     assert all(isinstance(parameter.type, click.Path) for parameter in path_options)
     assert all(any(item.type == "file" for item in parameter.type.shell_complete(None, parameter, "./")) for parameter in path_options)
+
+
+def test_coldsnap_cli_version_reports_host_and_plugin_versions(monkeypatch):
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(
+        "sparkrun.plugins.coldsnap.cli._version_identity",
+        lambda: ("0.3.7-alpha", "0.1.0"),
+    )
+
+    result = CliRunner().invoke(build_command(), ["--version"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "sparkrun v0.3.7-alpha\nColdSnap plugin v0.1.0\n"
+
+
+def test_coldsnap_subcommand_opens_with_progress_version_banner(monkeypatch, caplog):
+    from click.testing import CliRunner
+
+    monkeypatch.setattr(
+        "sparkrun.plugins.coldsnap.cli._version_identity",
+        lambda: ("0.3.7-alpha", "0.1.0"),
+    )
+
+    with caplog.at_level(PROGRESS, logger="sparkrun.plugins.coldsnap.cli"):
+        result = CliRunner().invoke(build_command(), ["capture", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert [record.message for record in caplog.records] == [
+        "sparkrun v0.3.7-alpha",
+        "ColdSnap plugin v0.1.0",
+    ]
 
 
 @pytest.mark.parametrize(
