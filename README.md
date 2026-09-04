@@ -63,8 +63,19 @@ source dev.sh
 An explicit checkout takes precedence over `SPARKRUN_BRANCH` and is never
 fetched, switched, or otherwise modified by the script. `dev.sh` exports the
 resolved `SPARKRUN_CHECKOUT`, creates or updates this repository's `.venv`,
-installs the selected sparkrun checkout and this plugin as editable packages,
-activates the virtual environment, and installs the pre-commit hooks.
+and assembles a disposable host at `.dev/sparkrun-with-coldsnap`. That assembly
+copies the selected host, links this checkout's live plugin source into its
+`sparkrun.plugins` tree, and adds the `plugins.coldsnap` feature binding when
+the selected host does not have it yet. The original host checkout is never
+modified. The script installs the assembled host and this plugin as editable
+packages, activates the virtual environment, and installs the pre-commit hooks.
+
+The disposable assembly deliberately exercises sparkrun's in-tree loader. The
+plugin and its registry declarations therefore have the same in-tree provenance
+and trust boundary they have after commit-pinned vendoring; the development
+workflow does not route ColdSnap through `core.external_plugins`. Once the
+ColdSnap binding lands upstream, the assembly recognizes it and does not add a
+duplicate, while the source link continues to make local plugin edits live.
 
 The test bootstrap makes this repository's plugin source take precedence over
 the copy vendored by the selected sparkrun checkout. This keeps changes local

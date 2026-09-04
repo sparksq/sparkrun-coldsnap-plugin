@@ -79,6 +79,7 @@ export SPARKRUN_BRANCH=develop-next
 source "$PLUGIN_ROOT/dev.sh"
 printf 'checkout=%s\\nbranch=%s\\nmarker=%s\\n' \\
     "$SPARKRUN_CHECKOUT" "$SPARKRUN_BRANCH" "$_SPARKRUN_COLDSNAP_MANAGED_CHECKOUT"
+printf 'dev_checkout=%s\\n' "$SPARKRUN_DEV_CHECKOUT"
 """,
         ],
         check=False,
@@ -94,6 +95,7 @@ printf 'checkout=%s\\nbranch=%s\\nmarker=%s\\n' \\
     assert "branch=develop-next" in result.stdout
     assert "checkout=%s" % (plugin / ".dev" / "sparkrun") in result.stdout
     assert "marker=%s" % (plugin / ".dev" / "sparkrun") in result.stdout
+    assert "dev_checkout=%s" % (plugin / ".dev" / "sparkrun-with-coldsnap") in result.stdout
     calls = git_log.read_text(encoding="utf-8")
     assert "fetch --prune origin main" in calls
     assert "fetch --prune origin develop-next" in calls
@@ -116,6 +118,7 @@ export _SPARKRUN_COLDSNAP_MANAGED_CHECKOUT="$PLUGIN_ROOT/.dev/sparkrun"
 source "$PLUGIN_ROOT/dev.sh"
 printf 'checkout=%s\\nmarker=%s\\n' \\
     "$SPARKRUN_CHECKOUT" "${_SPARKRUN_COLDSNAP_MANAGED_CHECKOUT-unset}"
+printf 'dev_checkout=%s\\n' "$SPARKRUN_DEV_CHECKOUT"
 """,
         ],
         check=False,
@@ -132,5 +135,6 @@ printf 'checkout=%s\\nmarker=%s\\n' \\
     assert "Using local sparkrun checkout: %s" % explicit in result.stdout
     assert "checkout=%s" % explicit in result.stdout
     assert "marker=unset" in result.stdout
+    assert "dev_checkout=%s" % (plugin / ".dev" / "sparkrun-with-coldsnap") in result.stdout
     calls = git_log.read_text(encoding="utf-8") if git_log.exists() else ""
     assert "fetch --prune" not in calls

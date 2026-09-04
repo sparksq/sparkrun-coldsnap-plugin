@@ -15,7 +15,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPARKRUN_CHECKOUT = os.environ.get("SPARKRUN_CHECKOUT")
+SPARKRUN_CHECKOUT = os.environ.get("SPARKRUN_DEV_CHECKOUT") or os.environ.get("SPARKRUN_CHECKOUT")
 if SPARKRUN_CHECKOUT:
     host_source = Path(SPARKRUN_CHECKOUT).expanduser().resolve() / "src"
     if not (host_source / "sparkrun" / "__init__.py").is_file():

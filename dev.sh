@@ -16,12 +16,14 @@ _sparkrun_coldsnap_dev_setup() {
     local checkout
     local checkout_origin
     local checkout_override
+    local dev_checkout
     local branch
     local managed_checkout=0
     local repository="https://github.com/spark-arena/sparkrun.git"
 
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
     venv_dir="$script_dir/.venv"
+    dev_checkout="$script_dir/.dev/sparkrun-with-coldsnap"
     branch="${SPARKRUN_BRANCH:-main}"
     checkout_override="${SPARKRUN_CHECKOUT:-}"
 
@@ -106,8 +108,13 @@ _sparkrun_coldsnap_dev_setup() {
         uv venv "$venv_dir" || return 1
     fi
 
-    echo "Installing the selected sparkrun checkout as an editable dependency ..."
-    uv pip install --python "$venv_dir/bin/python" --editable "$checkout[dev]" || return 1
+    echo "Assembling the live ColdSnap source into a disposable sparkrun tree ..."
+    "$venv_dir/bin/python" "$script_dir/scripts/assemble-dev-host.py" \
+        --host "$checkout" --destination "$dev_checkout" || return 1
+    export SPARKRUN_DEV_CHECKOUT="$dev_checkout"
+
+    echo "Installing the assembled sparkrun checkout as an editable dependency ..."
+    uv pip install --python "$venv_dir/bin/python" --editable "$dev_checkout[dev]" || return 1
 
     echo "Installing the ColdSnap plugin and its development tools ..."
     uv pip install --python "$venv_dir/bin/python" --project "$script_dir" --group dev || return 1
