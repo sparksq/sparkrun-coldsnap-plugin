@@ -1,0 +1,684 @@
+# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Fox Engine Ltd
+# SPDX-License-Identifier: AGPL-3.0-only
+# Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/coldsnap/LICENSE_EXCEPTION.
+
+"""Versioned acquisition of the ColdSnap controller tool set.
+
+ColdSnap execution needs the engine-neutral ``coldsnap`` controller and its
+matching vLLM and SGLang adapters. Runtime
+images contain their own copies, but Sparkrun must not depend on a developer
+checkout being present on the controller's ``PATH``.
+
+Release assets are fetched from one pinned GitHub release, verified against its
+``checksums.txt``, and installed atomically under Sparkrun's cache directory.
+Private repositories are supported through ``GH_TOKEN``/``GITHUB_TOKEN`` or an
+existing ``gh auth login`` session. As a temporary pre-publication fallback,
+an API authorization failure can build the exact pinned tag over Git/SSH in a
+pinned Go container.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import platform
+import re
+import shutil
+import stat
+import subprocess
+import tarfile
+import tempfile
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+from sparkrun.core.progress import PROGRESS, progress_heartbeat
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CONTROLLER_VERSION = "0.3.19"
+DEFAULT_CONTROLLER_COMMIT = "ad537313ce1897f6cc92abdc8861c87f29918695"
+DEFAULT_RELEASE_REPOSITORY = "sparksq/coldsnap"
+_DOWNLOAD_TIMEOUT = 60
+_VERSION = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_BINARIES = (
+    "coldsnap",
+    "coldsnap-vllm-adapter",
+    "coldsnap-sglang-adapter",
+    "coldsnap-criu-rpc",
+)
+_GO_CRIU_REPOSITORY = "https://github.com/sparksq/go-criu.git"
+_GO_CRIU_COMMIT = "29a4f2f8e8374d38319a9851d9c1ef880dd0a0e8"
+_GIT_TIMEOUT = 180
+_SOURCE_BUILD_TIMEOUT = 15 * 60
+_GO_DIRECTIVE = re.compile(r"^go[ \t]+(\d+\.\d+\.\d+)[ \t]*$", re.MULTILINE)
+_COLDSNAP_BUILDER = re.compile(
+    r"^FROM[ \t]+"
+    r"((?:docker\.io/library/)?golang:(\d+\.\d+\.\d+)@sha256:[0-9a-f]{64})"
+    r"[ \t]+AS[ \t]+coldsnap_builder[ \t]*$",
+    re.MULTILINE,
+)
+
+
+class ColdSnapToolError(RuntimeError):
+    """A managed controller could not be resolved or verified."""
+
+
+class ColdSnapReleaseAccessError(ColdSnapToolError):
+    """The pinned GitHub release could not be read with API credentials."""
+
+
+@dataclass(frozen=True)
+class ControllerTool:
+    path: Path
+    adapter_path: Path
+    version: str
+    source: str
+    sglang_adapter_path: Path | None = None
+    criu_rpc_path: Path | None = None
+
+    def payload_verifier(self, engine: str) -> Path:
+        """Return the architecture-matched adapter exposing payload-verify."""
+        if engine == "vllm":
+            return self.adapter_path
+        if engine == "sglang" and self.sglang_adapter_path is not None:
+            return self.sglang_adapter_path
+        raise ColdSnapToolError("ColdSnap has no payload verifier for engine %s" % engine)
+
+    @property
+    def environment(self) -> dict[str, str]:
+        environment = {"COLDSNAP_VLLM_ADAPTER": str(self.adapter_path)}
+        if self.sglang_adapter_path is not None:
+            environment["COLDSNAP_SGLANG_ADAPTER"] = str(self.sglang_adapter_path)
+        if self.criu_rpc_path is not None:
+            environment["COLDSNAP_CRIU_RPC"] = str(self.criu_rpc_path)
+        return environment
+
+
+def _platform() -> tuple[str, str]:
+    os_name = platform.system().lower()
+    if os_name != "linux":
+        raise ColdSnapToolError("ColdSnap controller releases currently support Linux only, not %s" % os_name)
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64"}:
+        return os_name, "amd64"
+    if machine in {"aarch64", "arm64"}:
+        return os_name, "arm64"
+    raise ColdSnapToolError("ColdSnap controller releases do not support architecture %s" % machine)
+
+
+def _settings(config: Any) -> tuple[str, str, str, str, bool]:
+    plugin = config.plugin_settings("coldsnap")
+    raw = plugin.get("controller", {}) if isinstance(plugin, Mapping) else {}
+    values = raw if isinstance(raw, Mapping) else {}
+    version = str(values.get("version") or DEFAULT_CONTROLLER_VERSION).removeprefix("v")
+    commit = str(values.get("commit") or DEFAULT_CONTROLLER_COMMIT)
+    repository = str(values.get("repository") or DEFAULT_RELEASE_REPOSITORY)
+    path = str(values.get("path") or "")
+    download = values.get("download", True)
+    if not _VERSION.fullmatch(version):
+        raise ColdSnapToolError("plugins.coldsnap.controller.version must be a semantic release version")
+    if not _COMMIT.fullmatch(commit):
+        raise ColdSnapToolError("plugins.coldsnap.controller.commit must be a full lowercase Git commit")
+    if not _REPOSITORY.fullmatch(repository):
+        raise ColdSnapToolError("plugins.coldsnap.controller.repository must be an owner/repository GitHub name")
+    if not isinstance(download, bool):
+        raise ColdSnapToolError("plugins.coldsnap.controller.download must be a boolean")
+    return version, commit, repository, path, download
+
+
+def _resolve_explicit(path: str, version: str) -> ControllerTool:
+    resolved = shutil.which(path) if os.path.sep not in path else path
+    controller = Path(resolved or path).expanduser()
+    if not controller.is_file() or not os.access(controller, os.X_OK):
+        raise ColdSnapToolError("Configured ColdSnap controller does not exist: %s" % controller)
+    adapter = controller.with_name("coldsnap-vllm-adapter")
+    if not adapter.is_file() or not os.access(adapter, os.X_OK):
+        on_path = shutil.which("coldsnap-vllm-adapter")
+        if on_path:
+            adapter = Path(on_path)
+    if not adapter.is_file() or not os.access(adapter, os.X_OK):
+        raise ColdSnapToolError("ColdSnap vLLM adapter is not beside %s and is not on PATH" % controller)
+    sglang_adapter = controller.with_name("coldsnap-sglang-adapter")
+    if not sglang_adapter.is_file() or not os.access(sglang_adapter, os.X_OK):
+        on_path = shutil.which("coldsnap-sglang-adapter")
+        if on_path:
+            sglang_adapter = Path(on_path)
+    if not sglang_adapter.is_file() or not os.access(sglang_adapter, os.X_OK):
+        raise ColdSnapToolError("ColdSnap SGLang adapter is not beside %s and is not on PATH" % controller)
+    criu_rpc = controller.with_name("coldsnap-criu-rpc")
+    if not criu_rpc.is_file() or not os.access(criu_rpc, os.X_OK):
+        on_path = shutil.which("coldsnap-criu-rpc")
+        if on_path:
+            criu_rpc = Path(on_path)
+    if not criu_rpc.is_file() or not os.access(criu_rpc, os.X_OK):
+        raise ColdSnapToolError("ColdSnap CRIU RPC helper is not beside %s and is not on PATH" % controller)
+    return ControllerTool(controller, adapter, version, "config", sglang_adapter, criu_rpc)
+
+
+def explicit_controller_environment(path: str) -> dict[str, str]:
+    """Bind an explicit controller to its sibling development adapters."""
+    resolved = shutil.which(path) if os.path.sep not in path else path
+    if not resolved:
+        return {}
+    controller = Path(resolved).expanduser()
+    environment: dict[str, str] = {}
+    for engine in ("vllm", "sglang"):
+        adapter = controller.with_name("coldsnap-%s-adapter" % engine)
+        if adapter.is_file() and os.access(adapter, os.X_OK):
+            environment["COLDSNAP_%s_ADAPTER" % engine.upper()] = str(adapter)
+    criu_rpc = controller.with_name("coldsnap-criu-rpc")
+    if criu_rpc.is_file() and os.access(criu_rpc, os.X_OK):
+        environment["COLDSNAP_CRIU_RPC"] = str(criu_rpc)
+    return environment
+
+
+def _cache_path(cache_dir: str | Path, version: str, os_name: str, arch: str) -> Path:
+    return Path(cache_dir) / "tools" / "coldsnap" / version / ("%s-%s" % (os_name, arch))
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _github_token() -> str:
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            return value
+    gh = shutil.which("gh")
+    if not gh:
+        return ""
+    try:
+        result = subprocess.run(
+            [gh, "auth", "token", "--hostname", "github.com"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _request_bytes(url: str, *, token: str, accept: str) -> bytes:
+    headers = {"Accept": accept, "User-Agent": "sparkrun-coldsnap"}
+    if token:
+        headers["Authorization"] = "Bearer %s" % token
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT) as response:
+        return response.read()
+
+
+def _fetch_release(repository: str, version: str, *, token: str) -> dict[str, str]:
+    url = "https://api.github.com/repos/%s/releases/tags/v%s" % (repository, version)
+    try:
+        payload = _request_bytes(url, token=token, accept="application/vnd.github+json")
+        document = json.loads(payload)
+    except urllib.error.HTTPError as error:
+        authentication = " Authenticate with `gh auth login` or GH_TOKEN." if not token else ""
+        error_type = ColdSnapReleaseAccessError if error.code in {401, 403, 404} else ColdSnapToolError
+        raise error_type(
+            "Could not resolve ColdSnap release v%s from %s: HTTP %s.%s" % (version, repository, error.code, authentication)
+        ) from error
+    except Exception as error:
+        authentication = " Authenticate with `gh auth login` or GH_TOKEN." if not token else ""
+        raise ColdSnapToolError(
+            "Could not resolve ColdSnap release v%s from %s: %s.%s" % (version, repository, error, authentication)
+        ) from error
+    assets = document.get("assets") if isinstance(document, dict) else None
+    if not isinstance(assets, list):
+        raise ColdSnapToolError("ColdSnap release v%s has no asset inventory" % version)
+    result: dict[str, str] = {}
+    for asset in assets:
+        if isinstance(asset, dict) and isinstance(asset.get("name"), str) and isinstance(asset.get("url"), str):
+            result[asset["name"]] = asset["url"]
+    return result
+
+
+def _checksum_for(checksums: bytes, name: str) -> str:
+    try:
+        text = checksums.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ColdSnapToolError("ColdSnap release checksums are not UTF-8") from error
+    matches: list[str] = []
+    for line in text.splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) != 2:
+            continue
+        filename = PurePosixPath(fields[1].lstrip("*"))
+        safe_parts = tuple(part for part in filename.parts if part != ".")
+        if safe_parts == (name,) and _SHA256.fullmatch(fields[0]):
+            matches.append(fields[0])
+    if len(matches) != 1:
+        raise ColdSnapToolError("ColdSnap release checksums do not contain exactly one entry for %s" % name)
+    return matches[0]
+
+
+def _extract_binary(archive: bytes, name: str) -> bytes:
+    try:
+        with tarfile.open(fileobj=BytesIO(archive), mode="r:gz") as bundle:
+            candidates = []
+            for member in bundle.getmembers():
+                path = PurePosixPath(member.name)
+                safe_parts = tuple(part for part in path.parts if part != ".")
+                if member.isfile() and safe_parts == (name,):
+                    candidates.append(member)
+            if len(candidates) != 1:
+                raise ColdSnapToolError("ColdSnap archive must contain exactly one %s binary" % name)
+            stream = bundle.extractfile(candidates[0])
+            if stream is None:
+                raise ColdSnapToolError("ColdSnap archive member %s is unreadable" % name)
+            return stream.read()
+    except (tarfile.TarError, OSError) as error:
+        raise ColdSnapToolError("ColdSnap release archive for %s is invalid: %s" % (name, error)) from error
+
+
+def _atomic_write(path: Path, payload: bytes, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(prefix=".%s-" % path.name, dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+    try:
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _verify_cached(root: Path, version: str, commit: str) -> ControllerTool | None:
+    manifest_path = root / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if manifest.get("version") != version or manifest.get("commit") != commit or manifest.get("format") != 1:
+        return None
+    for name in _BINARIES:
+        path = root / name
+        expected = manifest.get("sha256", {}).get(name)
+        if not path.is_file() or not isinstance(expected, str) or _file_sha256(path) != expected:
+            return None
+    controller = root / "coldsnap"
+    adapter = root / "coldsnap-vllm-adapter"
+    sglang_adapter = root / "coldsnap-sglang-adapter"
+    criu_rpc = root / "coldsnap-criu-rpc"
+    try:
+        result = subprocess.run(
+            [str(controller), "version", "--json"],
+            env={
+                **os.environ,
+                "COLDSNAP_VLLM_ADAPTER": str(adapter),
+                "COLDSNAP_SGLANG_ADAPTER": str(sglang_adapter),
+                "COLDSNAP_CRIU_RPC": str(criu_rpc),
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        identity = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    if result.returncode != 0 or identity.get("version") != version or identity.get("commit") != commit:
+        return None
+    return ControllerTool(controller, adapter, version, "cache", sglang_adapter, criu_rpc)
+
+
+def _command_detail(result: subprocess.CompletedProcess[str]) -> str:
+    detail = (result.stderr or result.stdout or "").strip()
+    return detail[-2000:] if detail else "exit status %s" % result.returncode
+
+
+def _clone_pinned_source(destination: Path, repository: str, version: str, commit: str) -> str:
+    git = shutil.which("git")
+    if not git:
+        raise ColdSnapToolError("Temporary ColdSnap source-build fallback requires git")
+    remote = "git@github.com:%s.git" % repository
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    logger.log(PROGRESS, "ColdSnap: cloning pinned controller source over Git/SSH")
+    try:
+        with progress_heartbeat(logger, "ColdSnap: cloning pinned controller source"):
+            clone = subprocess.run(
+                [git, "clone", "--quiet", "--depth", "1", "--branch", "v%s" % version, "--single-branch", remote, str(destination)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT,
+                env=environment,
+            )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ColdSnapToolError("Could not clone pinned ColdSnap source over SSH: %s" % error) from error
+    if clone.returncode != 0:
+        raise ColdSnapToolError("Could not clone pinned ColdSnap source over SSH: %s" % _command_detail(clone))
+    try:
+        resolved = subprocess.run(
+            [git, "-C", str(destination), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ColdSnapToolError("Could not verify cloned ColdSnap source: %s" % error) from error
+    actual = resolved.stdout.strip()
+    if resolved.returncode != 0 or actual != commit:
+        observed = actual or _command_detail(resolved)
+        raise ColdSnapToolError("ColdSnap tag v%s resolved to %s, expected pinned commit %s" % (version, observed, commit))
+    return remote
+
+
+def _clone_pinned_go_criu(destination: Path) -> None:
+    git = shutil.which("git")
+    if not git:
+        raise ColdSnapToolError("Temporary ColdSnap source-build fallback requires git")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    commands = (
+        [git, "init", "--quiet", str(destination)],
+        [git, "-C", str(destination), "remote", "add", "origin", _GO_CRIU_REPOSITORY],
+        [git, "-C", str(destination), "fetch", "--quiet", "--depth", "1", "origin", _GO_CRIU_COMMIT],
+        [git, "-C", str(destination), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
+    )
+    logger.log(PROGRESS, "ColdSnap: fetching pinned public go-criu source")
+    try:
+        with progress_heartbeat(logger, "ColdSnap: fetching pinned go-criu source"):
+            for command in commands:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=_GIT_TIMEOUT,
+                    env=environment,
+                )
+                if result.returncode != 0:
+                    raise ColdSnapToolError("Could not fetch pinned go-criu source: %s" % _command_detail(result))
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ColdSnapToolError("Could not fetch pinned go-criu source: %s" % error) from error
+
+
+def _source_build_toolchain(source: Path) -> tuple[str, str]:
+    """Resolve the release's own Go version and immutable builder image."""
+    try:
+        go_mod = (source / "go.mod").read_text(encoding="utf-8")
+        dockerfile = (source / "deploy" / "vllm" / "Dockerfile").read_text(encoding="utf-8")
+    except OSError as error:
+        raise ColdSnapToolError("Pinned ColdSnap source does not expose its Go build contract: %s" % error) from error
+    go_match = _GO_DIRECTIVE.search(go_mod)
+    builder_match = _COLDSNAP_BUILDER.search(dockerfile)
+    if go_match is None:
+        raise ColdSnapToolError("Pinned ColdSnap go.mod requires a full Go patch version")
+    if builder_match is None:
+        raise ColdSnapToolError("Pinned ColdSnap source has no digest-pinned coldsnap_builder image")
+    go_version = go_match.group(1)
+    builder_image = builder_match.group(1)
+    builder_version = builder_match.group(2)
+    if builder_version != go_version:
+        raise ColdSnapToolError(
+            "Pinned ColdSnap Go build contract is inconsistent: go.mod requires %s, "
+            "builder image provides %s" % (go_version, builder_version)
+        )
+    return go_version, builder_image
+
+
+def _build_controller_binaries_with_docker(
+    source: Path,
+    output: Path,
+    version: str,
+    commit: str,
+    os_name: str,
+    arch: str,
+) -> tuple[str, str]:
+    go_version, builder_image = _source_build_toolchain(source)
+    docker = shutil.which("docker")
+    if not docker:
+        raise ColdSnapToolError("Temporary ColdSnap source-build fallback requires docker")
+    output.mkdir(parents=True, exist_ok=True)
+    workspace = source.parent
+    build_script = (
+        "set -eu\n"
+        "mkdir -p /work/out /work/go-cache /work/go-mod\n"
+        'ldflags="-s -w -buildid= -X github.com/sparksq/coldsnap/internal/buildinfo.Version=$COLDSNAP_BUILD_VERSION '
+        '-X github.com/sparksq/coldsnap/internal/buildinfo.Commit=$COLDSNAP_BUILD_COMMIT"\n'
+        'go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap ./cmd/coldsnap\n'
+        'go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-vllm-adapter ./cmd/coldsnap-vllm-adapter\n'
+        'go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-sglang-adapter ./cmd/coldsnap-sglang-adapter\n'
+        '(cd cmd/coldsnap-criu-rpc && go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-criu-rpc .)\n'
+    )
+    command = [
+        docker,
+        "run",
+        "--rm",
+        "--pull",
+        "missing",
+        "--user",
+        "%s:%s" % (os.getuid(), os.getgid()),
+        "--mount",
+        "type=bind,src=%s,dst=/work" % workspace,
+        "--workdir",
+        "/work/source",
+        "--env",
+        "CGO_ENABLED=0",
+        "--env",
+        "GOOS=%s" % os_name,
+        "--env",
+        "GOARCH=%s" % arch,
+        "--env",
+        "GOCACHE=/work/go-cache",
+        "--env",
+        "GOMODCACHE=/work/go-mod",
+        "--env",
+        "COLDSNAP_BUILD_VERSION=%s" % version,
+        "--env",
+        "COLDSNAP_BUILD_COMMIT=%s" % commit,
+        builder_image,
+        "sh",
+        "-c",
+        build_script,
+    ]
+    logger.log(
+        PROGRESS,
+        "ColdSnap: building controller with source-pinned Go %s container",
+        go_version,
+    )
+    try:
+        with progress_heartbeat(logger, "ColdSnap: building controller from pinned source"):
+            result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=_SOURCE_BUILD_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ColdSnapToolError("Dockerized ColdSnap controller build failed: %s" % error) from error
+    if result.returncode != 0:
+        raise ColdSnapToolError("Dockerized ColdSnap controller build failed: %s" % _command_detail(result))
+    missing = [name for name in _BINARIES if not (output / name).is_file()]
+    if missing:
+        raise ColdSnapToolError("Dockerized ColdSnap controller build did not produce: %s" % ", ".join(missing))
+    return go_version, builder_image
+
+
+def install_controller_tool_from_ssh(
+    cache_dir: str | Path,
+    version: str,
+    repository: str,
+    os_name: str,
+    arch: str,
+    *,
+    commit: str = DEFAULT_CONTROLLER_COMMIT,
+) -> ControllerTool:
+    """Temporarily build a private pinned release using Git/SSH and Docker."""
+    with tempfile.TemporaryDirectory(prefix="sparkrun-coldsnap-source-") as temporary:
+        workspace = Path(temporary)
+        source = workspace / "source"
+        output = workspace / "out"
+        remote = _clone_pinned_source(source, repository, version, commit)
+        _clone_pinned_go_criu(source / "build" / "sources" / "go-criu")
+        go_version, builder_image = _build_controller_binaries_with_docker(source, output, version, commit, os_name, arch)
+        root = _cache_path(cache_dir, version, os_name, arch)
+        binary_digests: dict[str, str] = {}
+        for name in _BINARIES:
+            payload = (output / name).read_bytes()
+            binary_digests[name] = hashlib.sha256(payload).hexdigest()
+            _atomic_write(
+                root / name,
+                payload,
+                stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
+            )
+        manifest = {
+            "format": 1,
+            "version": version,
+            "commit": commit,
+            "repository": repository,
+            "platform": "%s-%s" % (os_name, arch),
+            "sha256": binary_digests,
+            "archives": {},
+            "source_build": {
+                "remote": remote,
+                "tag": "v%s" % version,
+                "go_version": go_version,
+                "builder_image": builder_image,
+            },
+        }
+        _atomic_write(
+            root / "manifest.json",
+            (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
+            stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
+        )
+    resolved = _verify_cached(root, version, commit)
+    if resolved is None:
+        raise ColdSnapToolError("Source-built ColdSnap controller v%s failed identity verification" % version)
+    return ControllerTool(
+        resolved.path,
+        resolved.adapter_path,
+        resolved.version,
+        "git-build",
+        resolved.sglang_adapter_path,
+        resolved.criu_rpc_path,
+    )
+
+
+def install_controller_tool(
+    cache_dir: str | Path,
+    version: str,
+    repository: str,
+    os_name: str,
+    arch: str,
+    *,
+    commit: str = DEFAULT_CONTROLLER_COMMIT,
+    token: str = "",
+    release_assets: Callable[[str, str], Mapping[str, str]] | None = None,
+    fetch_bytes: Callable[[str], bytes] | None = None,
+) -> ControllerTool:
+    if not token and (release_assets is None or fetch_bytes is None):
+        token = _github_token()
+    assets = dict(release_assets(repository, version)) if release_assets is not None else _fetch_release(repository, version, token=token)
+    fetch = fetch_bytes or (lambda url: _request_bytes(url, token=token, accept="application/octet-stream"))
+    checksum_url = assets.get("checksums.txt")
+    if not checksum_url:
+        raise ColdSnapToolError("ColdSnap release v%s is missing checksums.txt" % version)
+    checksums = fetch(checksum_url)
+    payloads: dict[str, bytes] = {}
+    archive_digests: dict[str, str] = {}
+    for name in _BINARIES:
+        archive_name = "%s_%s_%s_%s.tar.gz" % (name, version, os_name, arch)
+        url = assets.get(archive_name)
+        if not url:
+            raise ColdSnapToolError("ColdSnap release v%s is missing %s" % (version, archive_name))
+        archive = fetch(url)
+        expected = _checksum_for(checksums, archive_name)
+        actual = hashlib.sha256(archive).hexdigest()
+        if actual != expected:
+            raise ColdSnapToolError("ColdSnap release checksum mismatch for %s: expected %s, got %s" % (archive_name, expected, actual))
+        payloads[name] = _extract_binary(archive, name)
+        archive_digests[archive_name] = actual
+
+    root = _cache_path(cache_dir, version, os_name, arch)
+    binary_digests: dict[str, str] = {}
+    for name, payload in payloads.items():
+        binary_digests[name] = hashlib.sha256(payload).hexdigest()
+        _atomic_write(
+            root / name, payload, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+        )
+    manifest = {
+        "format": 1,
+        "version": version,
+        "commit": commit,
+        "repository": repository,
+        "platform": "%s-%s" % (os_name, arch),
+        "sha256": binary_digests,
+        "archives": archive_digests,
+    }
+    _atomic_write(
+        root / "manifest.json",
+        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
+        stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
+    )
+    resolved = _verify_cached(root, version, commit)
+    if resolved is None:
+        raise ColdSnapToolError("Installed ColdSnap controller v%s failed identity verification" % version)
+    return ControllerTool(
+        resolved.path,
+        resolved.adapter_path,
+        resolved.version,
+        "download",
+        resolved.sglang_adapter_path,
+        resolved.criu_rpc_path,
+    )
+
+
+def ensure_controller_tool(config: Any) -> ControllerTool:
+    version, commit, repository, configured_path, allow_download = _settings(config)
+    if configured_path:
+        return _resolve_explicit(configured_path, version)
+    os_name, arch = _platform()
+    root = _cache_path(config.cache_dir, version, os_name, arch)
+    cached = _verify_cached(root, version, commit)
+    if cached is not None:
+        return cached
+    if not allow_download:
+        raise ColdSnapToolError("ColdSnap controller v%s is not cached and plugins.coldsnap.controller.download is false" % version)
+    logger.log(PROGRESS, "ColdSnap: downloading controller v%s for %s/%s", version, os_name, arch)
+    try:
+        return install_controller_tool(config.cache_dir, version, repository, os_name, arch, commit=commit)
+    except ColdSnapReleaseAccessError as release_error:
+        logger.log(
+            PROGRESS,
+            "ColdSnap: release API access unavailable; using temporary pinned Git/SSH source-build fallback",
+        )
+        try:
+            return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit)
+        except ColdSnapToolError as build_error:
+            raise ColdSnapToolError(
+                "%s Temporary Git/SSH source-build fallback also failed: %s" % (release_error, build_error)
+            ) from build_error
+
+
+__all__ = [
+    "DEFAULT_CONTROLLER_COMMIT",
+    "DEFAULT_CONTROLLER_VERSION",
+    "DEFAULT_RELEASE_REPOSITORY",
+    "ColdSnapReleaseAccessError",
+    "ColdSnapToolError",
+    "ControllerTool",
+    "ensure_controller_tool",
+    "explicit_controller_environment",
+    "install_controller_tool",
+    "install_controller_tool_from_ssh",
+]

@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Fox Engine Ltd
+# SPDX-License-Identifier: AGPL-3.0-only
+
+schema = 1
+name = "coldsnap"
+version = "0.1.0"
+module = "sparkrun.plugins.coldsnap"
+feature = "plugins.coldsnap"
+repository = "git@github.com:sparksq/sparkrun-coldsnap-plugin.git"
+sparkrun = ">=0.3.7,<0.4"
+source = "src/sparkrun/plugins/coldsnap"
+tests = "tests/test_coldsnap_*.py"
