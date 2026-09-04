@@ -34,7 +34,7 @@ from sparkrun.plugins.coldsnap.artifacts import (
     resolve_artifact_store,
     resolve_generation_limit,
 )
-from sparkrun.plugins.coldsnap.cli import _resolve_materialization_policy, build_command
+from sparkrun.plugins.coldsnap.cli import _resolve_materialization_policy, _timing_tree_depth, build_command
 from sparkrun.plugins.coldsnap.config import ColdSnapRecipe
 from sparkrun.plugins.coldsnap.policy import resolve_coldsnap_policy
 from sparkrun.plugins.coldsnap.providers import (
@@ -1196,6 +1196,20 @@ def test_coldsnap_subcommand_opens_with_progress_version_banner(monkeypatch, cap
         "sparkrun v0.3.7-alpha",
         "ColdSnap plugin v0.1.0",
     ]
+
+
+@pytest.mark.parametrize(
+    ("verbosity", "expected"),
+    [(0, 2), (1, 3), (2, 4), (3, None), (4, None), (-1, 2)],
+)
+def test_coldsnap_timing_tree_depth_tracks_global_verbosity(verbosity, expected):
+    class Context:
+        obj = {"verbose": verbosity}
+
+        def find_root(self):
+            return self
+
+    assert _timing_tree_depth(Context()) == expected
 
 
 @pytest.mark.parametrize(

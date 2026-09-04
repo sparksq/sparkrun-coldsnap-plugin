@@ -39,6 +39,28 @@ def _emit_version_banner() -> None:
     logger.log(PROGRESS, "ColdSnap plugin v%s", plugin_version)
 
 
+def _timing_tree_depth(ctx=None) -> int | None:
+    """Use the host CLI's standard verbosity-to-timing-depth policy."""
+    import click
+
+    from sparkrun.utils.cli_formatters import timing_tree_depth_for_verbosity
+
+    ctx = ctx or click.get_current_context(silent=True)
+    root = ctx.find_root() if ctx is not None else None
+    root_object = getattr(root, "obj", None) or {}
+    return timing_tree_depth_for_verbosity(root_object.get("verbose", 0))
+
+
+def _format_timing_table(timeline) -> str:
+    from sparkrun.utils.cli_formatters import format_launch_timings
+
+    return format_launch_timings(
+        timeline.export(),
+        title="ColdSnap timings",
+        max_depth=_timing_tree_depth(),
+    )
+
+
 def _recipe_help(summary: str) -> str:
     return "%s\n\nRECIPE is a recipe name or YAML path." % summary
 
@@ -486,9 +508,7 @@ def _materialize(
         sctx.timing.end(operation_span, status=status)
         operation_span = None
         if show_timings:
-            from sparkrun.utils.cli_formatters import format_launch_timings
-
-            rendered = format_launch_timings(sctx.timing.export(), title="ColdSnap timings")
+            rendered = _format_timing_table(sctx.timing)
             if rendered:
                 click.echo()
                 click.echo(rendered)
@@ -688,9 +708,7 @@ def _run(
         sctx.timing.end(operation_span, status=status)
         operation_span = None
         if show_timings:
-            from sparkrun.utils.cli_formatters import format_launch_timings
-
-            rendered = format_launch_timings(sctx.timing.export(), title="ColdSnap timings")
+            rendered = _format_timing_table(sctx.timing)
             if rendered:
                 click.echo()
                 click.echo(rendered)
