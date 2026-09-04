@@ -9,6 +9,7 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
+import sparkrun.plugins as _plugin_api
 from sparkrun.plugins import register_cli_command, register_recipe_item
 from sparkrun.plugins.coldsnap.builder import ColdSnapBuilder
 from sparkrun.plugins.coldsnap.compatibility import ColdSnapCompatibilityError
@@ -20,7 +21,38 @@ _HANDLER = ColdSnapRecipeHandler()
 _EXECUTION_STRATEGY = ColdSnapExecutionStrategy()
 
 
+def _register_recipe_registries() -> None:
+    """Contribute the qualified recipes when the host supports overlays."""
+    entry_type = getattr(_plugin_api, "RegistryEntry", None)
+    register_registry = getattr(_plugin_api, "register_default_registry", None)
+    if entry_type is None or register_registry is None:
+        return
+
+    register_registry(
+        entry_type(
+            name="coldsnap",
+            url="https://github.com/sparksq/sparkrun-recipes.git",
+            subpath="coldsnap-recipes",
+            description="Qualified ColdSnap recipes for fast, recovery-aware inference startup",
+            visible=False,
+        ),
+        owner="coldsnap",
+    )
+    register_registry(
+        entry_type(
+            name="coldsnap-vanilla",
+            url="https://github.com/sparksq/sparkrun-recipes.git",
+            subpath="vanilla-recipes",
+            description="Vanilla controls matched to the qualified ColdSnap recipes",
+            enabled=False,
+            visible=False,
+        ),
+        owner="coldsnap",
+    )
+
+
 def register(v) -> None:
+    _register_recipe_registries()
     register_recipe_item(
         "coldsnap",
         _HANDLER,

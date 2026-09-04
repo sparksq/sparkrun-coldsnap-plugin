@@ -16,6 +16,20 @@ subject to sparkrun's `plugins.coldsnap` feature gate. The source repository
 and exact commit included by a sparkrun release are recorded in that release's
 `vendor/coldsnap.lock` and packaged `VENDORED.toml` files.
 
+When the host supports plugin-declared registry overlays, enabling this plugin
+also contributes the recipes from
+`https://github.com/sparksq/sparkrun-recipes.git`:
+
+- `@coldsnap/...` resolves qualified ColdSnap recipes from
+  `coldsnap-recipes/`. The registry is enabled but hidden from ordinary recipe
+  listings.
+- `@coldsnap-vanilla/...` resolves the matched controls from
+  `vanilla-recipes/`. This registry is hidden and disabled by default.
+
+These are runtime overlays, not edits to the user's `registries.yaml`. A user
+can still disable, remove, trust, or repoint either registry through the normal
+sparkrun registry commands.
+
 ## Development
 
 Set up and activate the development environment from the repository root:
@@ -71,13 +85,13 @@ The plugin resolves the release-pinned ColdSnap controller, vLLM adapter,
 SGLang adapter, and CRIU RPC helper as one verified tool set. It checks, in
 order:
 
-1. the local Sparkrun tool cache;
+1. the local sparkrun tool cache;
 2. the pinned GitHub release and its `checksums.txt`;
 3. `docker.io/scitrera/coldsnap-binaries:<version>` and its platform-specific
    bundle manifest; and
 4. an exact source-tag build using Git/SSH and the source-pinned Go container.
 
-The OCI and source-build fallbacks require Docker on the Sparkrun control node.
+The OCI and source-build fallbacks require Docker on the sparkrun control node.
 The public OCI bundle needs no registry credentials. Sites mirroring either
 source may override it without changing recipes:
 

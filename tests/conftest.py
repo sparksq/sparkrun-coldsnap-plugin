@@ -43,11 +43,28 @@ def isolate_sparkrun_state(tmp_path: Path, monkeypatch):
     import sparkrun.core.bootstrap as bootstrap
     import sparkrun.core.config as config
     import sparkrun.core.registry as registry
+    from sparkrun.core.features import FEATURE_FLAGS, FeatureFlag
+    from sparkrun.core.in_tree_plugins import IN_TREE_PLUGIN_FEATURES
+
+    try:
+        from sparkrun.core.registry_defaults import reset_declared_registries
+    except ImportError:
+        reset_declared_registries = None
 
     monkeypatch.setattr(config, "DEFAULT_CONFIG_DIR", tmp_path / "config", raising=False)
     monkeypatch.setattr(config, "DEFAULT_CACHE_DIR", tmp_path / "cache" / "sparkrun", raising=False)
     monkeypatch.setattr(registry, "BOOTSTRAP_REGISTRY_URLS", [], raising=False)
     monkeypatch.setattr(registry.RegistryManager, "_clone_or_pull", lambda self, entry: False, raising=False)
+    monkeypatch.setitem(
+        FEATURE_FLAGS,
+        "plugins.coldsnap",
+        FeatureFlag(name="plugins.coldsnap", description="Standalone ColdSnap plugin tests", default=True),
+    )
+    monkeypatch.setitem(IN_TREE_PLUGIN_FEATURES, "coldsnap", "plugins.coldsnap")
+    if reset_declared_registries is not None:
+        reset_declared_registries()
     bootstrap._variables = None
     yield
     bootstrap._variables = None
+    if reset_declared_registries is not None:
+        reset_declared_registries()
