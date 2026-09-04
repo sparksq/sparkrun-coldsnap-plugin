@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Fox Engine Ltd
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Authoritative plugin and ColdSnap controller versions.
+# Run: python scripts/update-versions.py
+# Run: python scripts/update-versions.py --check
+
+sparkrun-coldsnap-plugin: 0.1.0
+coldsnap: 0.3.19
+
+project_rules:
+  sparkrun-coldsnap-plugin:
+    - { type: pyproject, path: pyproject.toml }
+    - { type: init_py, path: src/sparkrun/plugins/coldsnap/__init__.py }
+  coldsnap:
+    - { type: init_py, path: src/sparkrun/plugins/coldsnap/_controller_version.py }

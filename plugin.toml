@@ -4,7 +4,6 @@
 
 schema = 1
 name = "coldsnap"
-version = "0.1.0"
 module = "sparkrun.plugins.coldsnap"
 feature = "plugins.coldsnap"
 repository = "git@github.com:sparksq/sparkrun-coldsnap-plugin.git"

@@ -40,10 +40,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
+from sparkrun.plugins.coldsnap._controller_version import __version__ as DEFAULT_CONTROLLER_VERSION
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONTROLLER_VERSION = "0.3.19"
 DEFAULT_CONTROLLER_COMMIT = "ad537313ce1897f6cc92abdc8861c87f29918695"
 DEFAULT_RELEASE_REPOSITORY = "sparksq/coldsnap"
 _DOWNLOAD_TIMEOUT = 60

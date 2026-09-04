@@ -25,9 +25,7 @@ if SPARKRUN_CHECKOUT:
 try:
     import sparkrun.plugins
 except ImportError as error:
-    raise RuntimeError(
-        "ColdSnap plugin tests require sparkrun; install it or set SPARKRUN_CHECKOUT"
-    ) from error
+    raise RuntimeError("ColdSnap plugin tests require sparkrun; run 'source dev.sh' or install it explicitly") from error
 
 plugin_parent = str(ROOT / "src" / "sparkrun" / "plugins")
 if plugin_parent in sparkrun.plugins.__path__:

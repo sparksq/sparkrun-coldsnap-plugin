@@ -21,6 +21,7 @@ from sparkrun.plugins.coldsnap.builder import (
     render_build_script,
 )
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
+from sparkrun.plugins.coldsnap.tool import DEFAULT_CONTROLLER_VERSION
 
 
 PINNED_IMAGE = "registry.example/vllm@sha256:" + "a" * 64
@@ -104,7 +105,7 @@ def test_builder_sources_use_public_https_where_available():
         "go_criu": "https://github.com/sparksq/go-criu.git",
         "cuda_checkpoint": "git@github.com:sparksq/cuda-checkpoint.git",
     }
-    assert settings.sources[0].ref == "refs/tags/v0.3.19"
+    assert settings.sources[0].ref == "refs/tags/v%s" % DEFAULT_CONTROLLER_VERSION
     assert settings.sources[0].revision == "ad537313ce1897f6cc92abdc8861c87f29918695"
     assert settings.sources[1].ref == settings.sources[1].revision == "29a4f2f8e8374d38319a9851d9c1ef880dd0a0e8"
     assert settings.sources[2].ref == settings.sources[2].revision == "00d5cce84c628088d6caa203fc4af40c1538b6f7"

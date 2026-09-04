@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Fox Engine Ltd
+# SPDX-License-Identifier: AGPL-3.0-only
+
+include .pre-commit-config.yaml
+include dev.sh
+include plugin.toml
+include versions.yaml
+include scripts/update-versions.py

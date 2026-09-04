@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+__version__ = "0.1.0"
+
 from sparkrun.plugins import register_cli_command, register_recipe_item
 from sparkrun.plugins.coldsnap.builder import ColdSnapBuilder
 from sparkrun.plugins.coldsnap.compatibility import ColdSnapCompatibilityError
@@ -31,4 +33,4 @@ def register(v) -> None:
     )
 
 
-__all__ = ["ColdSnapBuilder", "ColdSnapCompatibilityError", "register"]
+__all__ = ["ColdSnapBuilder", "ColdSnapCompatibilityError", "__version__", "register"]
