@@ -15,6 +15,7 @@ _sparkrun_coldsnap_dev_setup() {
     local venv_dir
     local checkout
     local checkout_origin
+    local checkout_override
     local branch
     local managed_checkout=0
     local repository="https://github.com/spark-arena/sparkrun.git"
@@ -22,6 +23,17 @@ _sparkrun_coldsnap_dev_setup() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || return 1
     venv_dir="$script_dir/.venv"
     branch="${SPARKRUN_BRANCH:-main}"
+    checkout_override="${SPARKRUN_CHECKOUT:-}"
+
+    # A managed setup exports its resolved path for the test bootstrap. On a
+    # later `source dev.sh`, do not mistake that output for a user-supplied
+    # override; otherwise changing only SPARKRUN_BRANCH silently keeps using
+    # the previously selected commit. Recognize the default path directly for
+    # shells initialized by older versions that did not export the marker.
+    if [[ "$checkout_override" == "$script_dir/.dev/sparkrun" ]] || \
+        [[ -n "${_SPARKRUN_COLDSNAP_MANAGED_CHECKOUT:-}" && "$checkout_override" == "$_SPARKRUN_COLDSNAP_MANAGED_CHECKOUT" ]]; then
+        checkout_override=""
+    fi
 
     if ! command -v uv >/dev/null 2>&1; then
         echo "uv is not installed. Install it from https://docs.astral.sh/uv/" >&2
@@ -33,8 +45,8 @@ _sparkrun_coldsnap_dev_setup() {
         return 1
     fi
 
-    if [[ -n "${SPARKRUN_CHECKOUT:-}" ]]; then
-        checkout="$SPARKRUN_CHECKOUT"
+    if [[ -n "$checkout_override" ]]; then
+        checkout="$checkout_override"
         if [[ ! -d "$checkout" ]]; then
             echo "SPARKRUN_CHECKOUT is not a directory: $checkout" >&2
             return 1
@@ -83,6 +95,11 @@ _sparkrun_coldsnap_dev_setup() {
 
     export SPARKRUN_CHECKOUT="$checkout"
     export SPARKRUN_BRANCH="$branch"
+    if (( managed_checkout )); then
+        export _SPARKRUN_COLDSNAP_MANAGED_CHECKOUT="$checkout"
+    else
+        unset _SPARKRUN_COLDSNAP_MANAGED_CHECKOUT
+    fi
 
     if [[ ! -x "$venv_dir/bin/python" ]]; then
         echo "Creating the ColdSnap plugin environment with uv ..."

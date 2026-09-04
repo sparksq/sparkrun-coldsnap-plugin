@@ -49,6 +49,10 @@ export SPARKRUN_BRANCH=develop-next
 source dev.sh
 ```
 
+The branch is re-evaluated every time `dev.sh` is sourced, so changing
+`SPARKRUN_BRANCH` and sourcing it again updates the managed checkout even
+though the previous setup exported its resolved `SPARKRUN_CHECKOUT` path.
+
 To use an existing local checkout instead, set `SPARKRUN_CHECKOUT`:
 
 ```bash
