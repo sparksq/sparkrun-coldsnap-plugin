@@ -170,12 +170,12 @@ misses. The TTFT metric begins at Docker
 `State.StartedAt` and ends at the first non-empty streamed token; manager
 preparation and capsule pulls are outside that measurement.
 
-Plugin 0.1.1 pins ColdSnap 0.3.20 in [versions.yaml](versions.yaml), including
-the required `runtime-v1` manager interface. Upgrade both together. Historical
+Plugin 0.1.2 pins ColdSnap 0.3.20 in [versions.yaml](versions.yaml), including
+the required `runtime-v1` manager interface introduced in plugin 0.1.1. Historical
 benchmark reports and raw logs are kept outside the public source repository;
 they are not timing guarantees for this release.
 
-The paired releases passed the existing-capsule TP2 driver matrix for
+Plugin 0.1.1 and ColdSnap 0.3.20 passed the existing-capsule TP2 driver matrix for
 Qwen3.8 27B FP8 on vLLM and SGLang and DeepSeek V4 Flash 0731 on vLLM, on
 both n580 and n610. The vLLM comparison separates default safetensors loading
 (`auto`), InstantTensor, ColdSnap recovery, and ColdSnap native. SGLang uses
@@ -199,10 +199,10 @@ to measure matched cases on your own qualified deployment. The
 describes the manager contract and verification boundaries. Fresh captures and
 live lifecycle operations require separate qualification from this TTFT matrix.
 
-## Explicit SGLang materialization (development)
+## Explicit SGLang materialization (since 0.1.2)
 
-The development `materialize` command also supports SGLang on n580 and n610;
-this was not available in the published v0.1.1 tag. It uses an explicit capture
+Plugin 0.1.2 adds `materialize` support for SGLang on n580 and n610;
+this was not available in v0.1.1. It uses an explicit capture
 to generate native packs and matching runtime/replay state, verifies a native
 restore, stops that verification workload, and only then selects the local
 artifact for subsequent runs. It does not enable asynchronous/write-behind
@@ -230,6 +230,14 @@ local selection. Repeating `materialize` re-verifies the existing local result
 without recapturing. Missing runtime assets fail verification rather than
 silently reporting success. Delete the recipe's local ColdSnap artifacts to
 explicitly discard a stale materialization before rebuilding it.
+
+The 0.1.2 materialization path was qualified separately with ColdSnap 0.3.20
+using Qwen3.8 27B FP8 TP2: fresh native capture, repeated materialization without
+recapture, and normal native inference passed on both n580 and n610. Fresh
+recovery-only materialization and normal recovery inference also passed on
+n580. Normal-run checks included exact response validation and lifecycle status
+against the new capture. This does not extend the earlier TTFT matrix or claim
+live sleep/wake, cross-driver placement, or other-model qualification.
 
 ## Terms and identity boundaries
 

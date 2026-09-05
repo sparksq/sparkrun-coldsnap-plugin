@@ -13,6 +13,12 @@ runtime.
 
 Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
 
+Release 0.1.2 adds explicit SGLang materialization through capture and verified
+restore, using ColdSnap 0.3.20. See the
+[materialization guide](DEV_PREVIEW.md#explicit-sglang-materialization-since-012)
+for native and recovery-only preparation; ordinary recovery restores do not
+gain asynchronous/write-behind materialization.
+
 The plugin is imported by sparkrun as `sparkrun.plugins.coldsnap` and remains
 subject to sparkrun's `plugins.coldsnap` feature gate. The source repository
 and exact commit included by a sparkrun release are recorded in that release's
