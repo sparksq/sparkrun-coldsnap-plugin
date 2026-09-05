@@ -1242,6 +1242,34 @@ def _sglang_setup():
     return recipe, replace(options, recipe=recipe), replace(plan, recipe=recipe, runtime=SglangRuntime()), sctx
 
 
+@pytest.mark.parametrize("operation", ["status", "sleep", "wake"])
+@pytest.mark.parametrize("driver", ["n580", "n610"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_sglang_lifecycle_follows_materialized_capture_but_respects_explicit_artifact(monkeypatch, tmp_path, operation, driver, explicit):
+    _recipe, options, plan, sctx = _sglang_setup()
+    source, local = tmp_path / "source.json", tmp_path / "local.json"
+    for path in (source, local):
+        path.write_text(json.dumps({"kind": "coldsnap-snapshot-artifact", "capture_id": path.stem}))
+    expected = source if explicit else local
+    monkeypatch.setattr(ColdSnapService, "_restore_artifact_path", lambda *args, **kwargs: source)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.resolve_artifact_store", lambda **kwargs: object())
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.select_local_materialization", lambda *args, **kwargs: local)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts",
+                        lambda *args, **kwargs: SimpleNamespace(verified=True, snapshot_driver=driver, hardware={}))
+    monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *args, **kwargs: plan.cluster_id)
+    def invoke(self, request, **kwargs):
+        assert request["artifact"] == str(expected)
+        return SimpleNamespace(stdout=json.dumps({
+            "format": 1, "kind": "coldsnap-inference-lifecycle", "engine": "sglang",
+            "operation_id": request["id"], "operation": operation, "cluster_id": plan.cluster_id,
+            "capture_id": expected.stem, "snapshot_driver": driver, "state": "running", "units": [{}, {}],
+        }))
+    monkeypatch.setattr(ColdSnapService, "_invoke", invoke)
+    request, report = ColdSnapService().execute_lifecycle(operation, options, plan=plan, sctx=sctx,
+                                                         artifact=str(source) if explicit else "")
+    assert report["capture_id"] == expected.stem
+
+
 @pytest.mark.parametrize("driver", ["n580", "n610"])
 @pytest.mark.parametrize("native,residual", [("auto", "auto"), ("required", "off"), ("off", "required")])
 def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypatch, tmp_path, driver, native, residual):

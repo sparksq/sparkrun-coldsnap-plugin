@@ -662,6 +662,17 @@ class ColdSnapService:
                 dry_run=render_only,
                 snapshot_driver=snapshot_driver,
             )
+            if not artifact and getattr(hardware, "verified", False) and str(plan.runtime.get_family()) == "sglang":
+                store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=snapshot_driver)
+                try:
+                    local = select_local_materialization(
+                        store, artifact_path, hardware=hardware.hardware, hosts=plan.host_list, snapshot_driver=snapshot_driver,
+                    )
+                except RuntimeError as error:
+                    logger.warning("ColdSnap: ignoring unusable local materialization for lifecycle control: %s", error)
+                    local = None
+                if local is not None:
+                    artifact_path = local
         cluster_id = plan.cluster_id
         if not render_only:
             from sparkrun.api._resolve import discover_cluster_id_by_intent
