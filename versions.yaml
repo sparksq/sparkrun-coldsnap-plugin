@@ -6,8 +6,8 @@
 # Run: python scripts/update-versions.py
 # Run: python scripts/update-versions.py --check
 
-sparkrun-coldsnap-plugin: 0.1.0
-coldsnap: 0.3.19
+sparkrun-coldsnap-plugin: 0.1.1
+coldsnap: 0.3.20
 
 project_rules:
   sparkrun-coldsnap-plugin:

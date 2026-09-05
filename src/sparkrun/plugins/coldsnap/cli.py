@@ -474,6 +474,32 @@ def _resolve_materialization_policy(snapshot_driver, engine, native_weights, res
     return native_weights, residual_overlay
 
 
+def _begin_operation_timing(sctx, operation, *, dry_run, show_timings):
+    """Share idempotent span completion across explicit manager operations."""
+    import click
+
+    from sparkrun.core.timing import Timeline
+
+    if not dry_run and getattr(sctx, "timing", None) is None:
+        sctx.timing = Timeline()
+    span = None if dry_run else sctx.timing.begin("coldsnap.%s" % operation, operation=operation)
+
+    def finish(status="ok"):
+        nonlocal span
+        if span is None or getattr(sctx, "timing", None) is None:
+            return
+        sctx.timing.end(span, status=status)
+        span = None
+        if show_timings:
+            rendered = _format_timing_table(sctx.timing)
+            if rendered:
+                click.echo()
+                click.echo(rendered)
+                click.echo()
+
+    return finish
+
+
 def _materialize(
     recipe,
     cluster,
@@ -493,26 +519,11 @@ def _materialize(
 
     import sparkrun.api as api
     from sparkrun.api._context import default_sctx
-    from sparkrun.core.timing import STATUS_ERROR, Timeline
+    from sparkrun.core.timing import STATUS_ERROR
     from sparkrun.plugins.coldsnap.compatibility import verify_coldsnap_hosts
 
     sctx = default_sctx()
-    if not dry_run and getattr(sctx, "timing", None) is None:
-        sctx.timing = Timeline()
-    operation_span = None if dry_run else sctx.timing.begin("coldsnap.materialize", operation="materialize")
-
-    def finish_timing(status="ok"):
-        nonlocal operation_span
-        if operation_span is None or getattr(sctx, "timing", None) is None:
-            return
-        sctx.timing.end(operation_span, status=status)
-        operation_span = None
-        if show_timings:
-            rendered = _format_timing_table(sctx.timing)
-            if rendered:
-                click.echo()
-                click.echo(rendered)
-                click.echo()
+    finish_timing = _begin_operation_timing(sctx, "materialize", dry_run=dry_run, show_timings=show_timings)
 
     base_strategy = {
         key: value
@@ -692,27 +703,10 @@ def _run(
 
     import sparkrun.api as api
     from sparkrun.api._context import default_sctx
-    from sparkrun.core.timing import STATUS_ERROR, Timeline
+    from sparkrun.core.timing import STATUS_ERROR
 
     sctx = default_sctx()
-    operation_span = None
-    if not dry_run:
-        if getattr(sctx, "timing", None) is None:
-            sctx.timing = Timeline()
-        operation_span = sctx.timing.begin("coldsnap.%s" % operation, operation=operation)
-
-    def finish_timing(status="ok"):
-        nonlocal operation_span
-        if operation_span is None or getattr(sctx, "timing", None) is None:
-            return
-        sctx.timing.end(operation_span, status=status)
-        operation_span = None
-        if show_timings:
-            rendered = _format_timing_table(sctx.timing)
-            if rendered:
-                click.echo()
-                click.echo(rendered)
-                click.echo()
+    finish_timing = _begin_operation_timing(sctx, operation, dry_run=dry_run, show_timings=show_timings)
 
     strategy_options = {
         key: value

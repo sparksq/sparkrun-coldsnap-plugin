@@ -14,7 +14,7 @@ and registry provenance that the eventual vendored release will use.
 
 This is preview software. Expect rough edges, long first-time preparation, and
 changes to commands, artifacts, or recipes while qualification continues. Do
-not use the timing numbers below as service-level guarantees.
+not treat successful qualification as a service-level or performance guarantee.
 
 ## What you need
 
@@ -162,35 +162,18 @@ sparkrun stop \
 For the Qwen3.8 27B FP8 TP2 vLLM recipe, the plugin automatically selects the
 newest snapshot driver supported by every
 placed host: `n580` when the lowest NVIDIA driver major is 580–609, or `n610`
-when every placed host is on 610 or newer. After successful materialization:
-
-- On NVIDIA 580 drivers, expect roughly 70–90 seconds to first token. The
-  qualified recovery median was 74.987 seconds, about 2.3 times faster than its
-  matched InstantTensor control.
-- On NVIDIA 610 or newer drivers, expect roughly 30–50 seconds to first token,
-  including restored CUDA graph readiness. The qualified recovery and native
-  medians were 39.221 and 35.694 seconds respectively.
+when every placed host is on 610 or newer.
 
 Actual wall time observed from `sparkrun run` also includes manager-side work
 before the container starts, such as validation, artifact checks, and any cache
-misses. The qualification TTFT metric below begins at Docker
+misses. The TTFT metric begins at Docker
 `State.StartedAt` and ends at the first non-empty streamed token; manager
 preparation and capsule pulls are outside that measurement.
 
-TTFT values are three-sample medians. Lower is better.
-
-These numbers come from the September 4 ColdSnap v0.3.18 qualification matrix;
-the accepted DeepSeek n580 capture also used the fix included in v0.3.19. The
-current preview's controller pin is recorded in [versions.yaml](versions.yaml).
-
-| Engine / model | Driver | Vanilla (s) | Recovery (s) | Native (s) | Capture wall (s) |
-| --- | --- | ---: | ---: | ---: | ---: |
-| vLLM / Qwen3.8 27B FP8 | n580 | 172.251 | **74.987** | **84.226** | 368.4 |
-| vLLM / Qwen3.8 27B FP8 | n610 | 229.003 | **39.221** | **35.694** | 925.5 |
-| SGLang / Qwen3.8 27B FP8 | n580 | 159.912 | **120.570** | **50.958** | 558.4 |
-| SGLang / Qwen3.8 27B FP8 | n610 | 131.352 | **59.397** | **37.161** | 1,243.2 |
-| vLLM / DeepSeek V4 Flash 0731 | n580 | 165.725 | **136.961** | **137.361** | 616.1 |
-| vLLM / DeepSeek V4 Flash 0731 | n610 | 294.432 | **68.518** | **53.845** | 1,674.0 |
+Plugin 0.1.1 pins ColdSnap 0.3.20 in [versions.yaml](versions.yaml), including
+the required `runtime-v1` manager interface. Upgrade both together. Historical
+benchmark reports and raw logs are kept outside the public source repository;
+they are not timing guarantees for this release.
 
 The n610 restores use the current `preserve-nccl-exec` default. Their first
 token is served only after restored CUDA graphs are ready. The n580 path remains
@@ -199,10 +182,12 @@ currently as fast as or faster than native weights, so sparkrun's default
 materialization policy favors a target-local residual overlay and leaves native
 weights optional.
 
-See the full
-[September 4 qualification report](https://github.com/sparksq/coldsnap/blob/main/benchmarks/results/2026-09-04-v0318-driver-ttft-matrix.md)
-for methodology, individual samples, portability results, artifact identities,
-and known performance follow-ups.
+Use ColdSnap's
+[maintained benchmark harnesses](https://github.com/sparksq/coldsnap/blob/main/benchmarks/harnesses/README.md)
+to measure matched cases on your own qualified deployment. The
+[runtime-neutral manager guide](https://github.com/sparksq/coldsnap/blob/main/docs/runtime-neutral-managers.md)
+describes the focused Qwen restore qualification and remaining coverage gaps,
+including n610 recovery timing.
 
 ## Terms and identity boundaries
 

@@ -26,6 +26,9 @@ from sparkrun.orchestration.primitives import build_ssh_kwargs
 from sparkrun.transports import open_cluster_host_session
 from sparkrun.transports.session import HostCommandResult, HostSessionError
 
+from .manager_runtime import DockerManagerRuntime, RuntimeOperationError
+from .runtime_contract import validate_runtime_request
+
 logger = logging.getLogger(__name__)
 
 PROTOCOL_FORMAT = 1
@@ -36,6 +39,7 @@ CAPABILITIES = (
     "huggingface-resolve",
     "oci-pull",
     "oci-push",
+    "runtime-v1",
     "upload",
 )
 REQUEST_FIELDS = frozenset(
@@ -56,6 +60,7 @@ REQUEST_FIELDS = frozenset(
         "repository",
         "revision",
         "source",
+        "runtime",
     }
 )
 
@@ -111,6 +116,8 @@ class _ProviderHandler(socketserver.StreamRequestHandler):
         except Exception as error:  # noqa: BLE001 - protocol boundary
             request_id = request.get("id", "") if isinstance(request, Mapping) else ""
             response = {"format": PROTOCOL_FORMAT, "id": request_id, "ok": False, "error": str(error)}
+            if isinstance(error, RuntimeOperationError):
+                response["error_code"] = error.code
         try:
             payload = json.dumps(response, separators=(",", ":")).encode("utf-8") + b"\n"
             if len(payload) > MAXIMUM_MESSAGE_BYTES:
@@ -142,6 +149,7 @@ class ColdSnapHostProvider:
         cluster=None,
         session_factory=None,
         capabilities=None,
+        runtime_factory=None,
     ):
         self.request_id = str(request.get("id") or "")
         units = request.get("launch", {}).get("units", [])
@@ -153,6 +161,12 @@ class ColdSnapHostProvider:
             ssh_kwargs = {**ssh_kwargs, "ssh_user": cluster.user}
         factory = session_factory or open_cluster_host_session
         self.session = factory(cluster, ssh_kwargs=ssh_kwargs)
+        try:
+            self.runtime = (runtime_factory or DockerManagerRuntime)(self.session)
+        except BaseException:
+            self.session.close()
+            raise
+        self.workload = dict(request.get("workload") or {})
         selected_capabilities = tuple(CAPABILITIES if capabilities is None else capabilities)
         if not selected_capabilities or any(
             not isinstance(capability, str) or not capability or any(character in capability for character in "\r\n\x00")
@@ -250,7 +264,7 @@ class ColdSnapHostProvider:
                 provider=getattr(self.session, "provider_name", type(self.session).__name__),
                 capabilities=list(self.capabilities),
             )
-        if operation not in self.capabilities:
+        if ("runtime-v1" if operation == "runtime" else operation) not in self.capabilities:
             raise RuntimeError(f"unsupported host-provider operation {operation!r}")
         host = request.get("host")
         if not isinstance(host, str) or host not in self.hosts:
@@ -274,8 +288,18 @@ class ColdSnapHostProvider:
                 recursive=request.get("recursive") is True,
             )
             return self._response(request_id)
+        if operation == "runtime":
+            operation_spec = self._mapping(request.get("runtime"), "runtime")
+            validate_runtime_request(operation_spec)
+            registry_capability = {"image-pull": "oci-pull", "image-push": "oci-push"}.get(operation_spec["action"])
+            if registry_capability and registry_capability not in self.capabilities:
+                raise RuntimeError(f"unsupported host-provider capability {registry_capability!r}")
+            if operation_spec["action"] == "workload-run":
+                operation_spec = {**operation_spec, "workload": self._workload_metadata(operation_spec["workload"])}
+            result = self.runtime.invoke(host, operation_spec)
+            return self._response(request_id, runtime=result)
         if operation in {"oci-pull", "oci-push"}:
-            self.session.docker_registry(host, operation.removeprefix("oci-"), self._string(request.get("image"), "image"))
+            self.runtime.invoke(host, {"action": operation.replace("oci-", "image-"), "image": self._string(request.get("image"), "image")})
             return self._response(request_id)
         if operation == "huggingface-publish":
             result = self._huggingface_publish(host, request)
@@ -289,43 +313,57 @@ class ColdSnapHostProvider:
             return self._response(request_id, value=result.stdout.decode("utf-8", errors="strict").strip())
         raise RuntimeError(f"unimplemented host-provider capability {operation!r}")
 
+    def _workload_metadata(self, spec: Mapping[str, Any]) -> dict[str, Any]:
+        labels = dict(spec.get("labels") or {})
+        cluster_id = self.workload.get("cluster_id")
+        if cluster_id and labels.get("io.sparksq.coldsnap.workload") == cluster_id:
+            for field in ("cluster_id", "intent_id", "recipe", "runtime", "model", "served_model_name"):
+                labels["sparkrun." + field] = str(self.workload.get(field) or "")
+            labels["sparkrun.rank"] = labels.get("io.sparksq.coldsnap.rank", "")
+        return {**spec, "labels": labels}
+
     def _huggingface_publish(self, host: str, request: Mapping[str, Any]) -> HostCommandResult:
-        token = self._huggingface_token()
         source = self._string(request.get("source"), "source")
-        arguments = [
-            "docker",
-            "run",
-            "--rm",
-            "-i",
-            "--entrypoint",
-            "python3",
-            "--volume",
-            source + ":/coldsnap-upload/native.pack:ro",
-            self._string(request.get("image"), "image"),
-            "-c",
+        return self._huggingface_helper(
+            host,
+            request,
             _HF_UPLOAD_PROGRAM,
-            self._string(request.get("repository"), "repository"),
-            self._string(request.get("revision"), "revision"),
-            self._string(request.get("destination"), "destination"),
-        ]
-        return self.session.execute(host, arguments, input_data=token.encode("utf-8"))
+            [
+                self._string(request.get("repository"), "repository"),
+                self._string(request.get("revision"), "revision"),
+                self._string(request.get("destination"), "destination"),
+            ],
+            mounts=[{"source": source, "target": "/coldsnap-upload/native.pack", "read_only": True}],
+        )
 
     def _huggingface_resolve(self, host: str, request: Mapping[str, Any]) -> HostCommandResult:
-        token = self._huggingface_token()
-        arguments = [
-            "docker",
-            "run",
-            "--rm",
-            "-i",
-            "--entrypoint",
-            "python3",
-            self._string(request.get("image"), "image"),
-            "-c",
+        return self._huggingface_helper(
+            host,
+            request,
             _HF_REVISION_PROGRAM,
-            self._string(request.get("repository"), "repository"),
-            self._string(request.get("revision"), "revision"),
-        ]
-        return self.session.execute(host, arguments, input_data=token.encode("utf-8"))
+            [
+                self._string(request.get("repository"), "repository"),
+                self._string(request.get("revision"), "revision"),
+            ],
+        )
+
+    def _huggingface_helper(self, host, request, program, arguments, *, mounts=None):
+        # Credentials travel on stdin; never store them in workload environment or labels.
+        result = self.runtime.invoke(
+            host,
+            {
+                "action": "workload-run",
+                "workload": {
+                    "image": self._string(request.get("image"), "image"),
+                    "remove_after_exit": True,
+                    "entrypoint": "python3",
+                    "command": ["-c", program, *arguments],
+                    "mounts": mounts or [],
+                    "input": base64.b64encode(self._huggingface_token().encode("utf-8")).decode("ascii"),
+                },
+            },
+        )
+        return HostCommandResult(host, 0, base64.b64decode(result.get("output") or "", validate=True), b"")
 
     @staticmethod
     def _response(request_id: str, **values) -> dict[str, Any]:
@@ -354,6 +392,12 @@ class ColdSnapHostProvider:
     def _strings(value: Any, name: str) -> list[str]:
         if not isinstance(value, list) or not value or any(not isinstance(item, str) or "\x00" in item for item in value):
             raise RuntimeError(f"host-provider {name} are invalid")
+        return value
+
+    @staticmethod
+    def _mapping(value: Any, name: str) -> Mapping[str, Any]:
+        if not isinstance(value, Mapping):
+            raise RuntimeError(f"{name} is invalid")
         return value
 
     @staticmethod

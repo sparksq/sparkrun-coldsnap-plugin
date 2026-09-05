@@ -201,7 +201,8 @@ def test_provider_keeps_hugging_face_token_on_manager_side(monkeypatch):
     assert len(session.calls) == 2
     for call in session.calls:
         assert call[0:2] == ("exec", "node-a")
-        assert call[2][:5] == ["docker", "run", "--rm", "-i", "--entrypoint"]
+        assert call[2][:2] == ["docker", "run"]
+        assert all(flag in call[2] for flag in ("--rm", "-i", "--entrypoint"))
         assert call[3] == b"hf_manager_secret"
     assert "/packs/worker-0.pack:/coldsnap-upload/native.pack:ro" in session.calls[0][2]
 

@@ -26,6 +26,30 @@ from sparkrun.plugins.coldsnap.timing import (
 from sparkrun.utils.cli_formatters import format_launch_timings
 
 
+@pytest.mark.parametrize("operation", ["capture", "restore", "materialize"])
+def test_cli_operation_timing_finishes_once(operation, monkeypatch, capsys):
+    from sparkrun.plugins.coldsnap.cli import _begin_operation_timing
+
+    calls = []
+    timeline = SimpleNamespace(begin=lambda *args, **kwargs: "span", end=lambda *args, **kwargs: calls.append((args, kwargs)))
+    sctx = SimpleNamespace(timing=timeline)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.cli._format_timing_table", lambda _: "timing table")
+    finish = _begin_operation_timing(sctx, operation, dry_run=False, show_timings=True)
+    finish("error")
+    finish()
+    assert calls == [(("span",), {"status": "error"})]
+    assert capsys.readouterr().out.count("timing table") == 1
+
+
+def test_cli_dry_run_does_not_create_a_timeline(capsys):
+    from sparkrun.plugins.coldsnap.cli import _begin_operation_timing
+
+    sctx = SimpleNamespace()
+    _begin_operation_timing(sctx, "capture", dry_run=True, show_timings=True)()
+    assert not hasattr(sctx, "timing")
+    assert capsys.readouterr().out == ""
+
+
 def _request():
     return {
         "format": 4,

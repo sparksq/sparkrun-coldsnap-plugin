@@ -127,6 +127,43 @@ Every acquisition path verifies the configured release version and full Git
 commit, the target OS and architecture, and the SHA-256 digest of all four
 executables before activating the cache generation.
 
+## Runtime-neutral manager support
+
+Plugin 0.1.1 pins ColdSnap 0.3.20. Upgrade both components together. The provider
+advertises `runtime-v1` and delegates typed image/workload operations to
+`DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
+Sparkrun owns its workload labels and all registry credentials. Both engine
+adapters and both snapshot drivers use the same boundary.
+
+The full design and current limitations are documented in ColdSnap's
+[runtime-neutral manager contract](https://github.com/sparksq/coldsnap/blob/main/docs/runtime-neutral-managers.md).
+Kubernetes is not yet implemented or
+qualified. Manager-side builders, OCI acquisition, cache helpers, and deletion
+remain Docker-based; this is not a Docker-free Sparkrun distribution.
+
+For integration testing, build ColdSnap locally and point a
+separate development Sparkrun configuration at the sibling controller tools:
+
+```yaml
+plugins:
+  coldsnap:
+    controller:
+      path: /path/to/coldsnap/bin/coldsnap
+      download: false
+```
+
+The controller's vLLM/SGLang adapters and CRIU RPC helper must be available
+beside it. The default acquisition path uses the exact controller release and
+source commit pinned by this plugin. Use a separate Python environment when
+testing local overrides so the working plugin installation is unaffected.
+
+Run `tests/test_manager_runtime.py` for backend and wire-contract tests.
+Set `COLDSNAP_SOURCE_ROOT` and `COLDSNAP_GO` to enable the Go/Python round trip;
+also set `COLDSNAP_TEST_DOCKER_IMAGE` to a locally cached shell image (for example
+`busybox:1.37`) to enable the isolated container and image-build smoke tests.
+These tests create only uniquely named local test resources, clean them up,
+and do not request GPUs or publish images.
+
 ## Licensing
 
 The ColdSnap plugin is licensed under the GNU Affero General Public License
