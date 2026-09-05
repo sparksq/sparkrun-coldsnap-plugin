@@ -199,6 +199,38 @@ to measure matched cases on your own qualified deployment. The
 describes the manager contract and verification boundaries. Fresh captures and
 live lifecycle operations require separate qualification from this TTFT matrix.
 
+## Explicit SGLang materialization (development)
+
+The development `materialize` command also supports SGLang on n580 and n610;
+this was not available in the published v0.1.1 tag. It uses an explicit capture
+to generate native packs and matching runtime/replay state, verifies a native
+restore, stops that verification workload, and only then selects the local
+artifact for subsequent runs. It does not enable asynchronous/write-behind
+materialization during ordinary recovery restores.
+
+```bash
+sparkrun coldsnap materialize --cluster <cluster-name> \
+  @coldsnap/qwen3.8-27b-fp8-coldsnap-tp2-sglang
+sparkrun run --cluster <cluster-name> \
+  @coldsnap/qwen3.8-27b-fp8-coldsnap-tp2-sglang
+```
+
+Both `auto` options request the native pack and matching local runtime state.
+Use `--native-weights off --residual-overlay required` for a recovery-only
+local capture. `--native-weights required --residual-overlay off` still captures
+the companion capsule/metadata needed to consume the native pack: SGLang does
+not splice a newly generated pack into an older capture. This is not vLLM's
+n580 pre-worker-import residual optimization and makes no equivalent timing
+promise. Capture may replace an existing deployment for the same recipe.
+
+The source descriptor is left unchanged. Local results are bound to that source,
+the exact driver version, hardware and rank-ordered hosts. Normal `run` selects
+them only on the matching target; an explicit restore `--artifact` bypasses
+local selection. Repeating `materialize` re-verifies the existing local result
+without recapturing. Missing runtime assets fail verification rather than
+silently reporting success. Delete the recipe's local ColdSnap artifacts to
+explicitly discard a stale materialization before rebuilding it.
+
 ## Terms and identity boundaries
 
 These names distinguish orchestration roles and stored artifacts. In

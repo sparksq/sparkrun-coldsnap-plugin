@@ -22,6 +22,7 @@ from sparkrun.plugins.coldsnap.artifacts import ArtifactStore
 
 OVERLAY_FORMAT = 3
 OVERLAY_KIND = "sparkrun-coldsnap-local-residual-overlay"
+MATERIALIZATION_KIND = "sparkrun-coldsnap-local-materialization"
 PORTABLE_IDENTITY_FORMAT = 1
 _MAX_DESCRIPTOR_BYTES = 8 * 1024 * 1024
 
@@ -168,6 +169,107 @@ def _same_model_payloads(first: Mapping[str, Any], second: Mapping[str, Any]) ->
     left = _object_identities(first, "weights", "model_payloads", "objects")
     right = _object_identities(second, "weights", "model_payloads", "objects")
     return left == right
+
+
+def validate_materialization_source(path: Path) -> dict[str, Any]:
+    """Reject missing/wrong-engine input before a materialization launches work."""
+    source = _decode_artifact(_read_regular(path), path)
+    launch = source.get("launch")
+    if (not isinstance(launch, Mapping) or launch.get("engine") != "sglang"
+            or not launch.get("model") or not launch.get("execution") or not launch.get("units")):
+        raise RuntimeError("ColdSnap materialization requires a committed SGLang source with a complete launch contract")
+    return source
+
+
+def _validate_local_materialization(source: Mapping[str, Any], captured: Mapping[str, Any]) -> None:
+    """Keep SGLang's pack, semantic manifest and capsule as one captured unit.
+
+    A new capture need not reproduce an older pack's digest. Never splice its
+    bytes into the older capsule or retain the older native-provider inventory.
+    """
+    before, after = source.get("launch", {}), captured.get("launch", {})
+    if (not isinstance(before, Mapping) or not isinstance(after, Mapping)
+            or before.get("engine") != "sglang" or after.get("engine") != "sglang"):
+        raise RuntimeError("capture-based materialization requires SGLang")
+    for field in ("model", "execution"):
+        if not before.get(field) or before[field] != after.get(field):
+            raise RuntimeError("ColdSnap materialization changed the source %s" % field)
+    def images(launch):
+        return [(unit.get("id"), unit.get("index"), unit.get("devices"), unit.get("image_digest"))
+                for unit in launch.get("units", ())]
+    if not images(before) or images(before) != images(after):
+        raise RuntimeError("ColdSnap materialization changed source images or device assignments")
+    if source.get("snapshot_driver") != captured.get("snapshot_driver"):
+        raise RuntimeError("ColdSnap materialization changed the snapshot driver")
+
+
+def select_local_materialization(
+    store: ArtifactStore, source_path: Path, *, hardware: Mapping[str, Any],
+    hosts: Sequence[str], snapshot_driver: str, require_native: bool = False,
+) -> Path | None:
+    """Select a verified SGLang capture only for its source and exact target."""
+    identity = target_identity(hardware, hosts, snapshot_driver)
+    key = target_key(identity)
+    record_path, artifact_path = store.overlay_record(key), store.overlay(key)
+    if not record_path.exists() or not artifact_path.exists():
+        return None
+    record = _read_json(record_path)
+    if record.get("kind") != MATERIALIZATION_KIND:
+        return None
+    source = _decode_artifact(_read_regular(source_path), source_path)
+    payload = _read_regular(artifact_path)
+    captured = _decode_artifact(payload, artifact_path)
+    if (record.get("format") != 1 or record.get("target") != identity
+            or record.get("source_identity") != _portable_identity(source)
+            or record.get("artifact_sha256") != _sha256(payload)
+            or record.get("verified") is not True):
+        raise RuntimeError("ColdSnap local materialization does not match its source or target")
+    _validate_local_materialization(source, captured)
+    if captured.get("snapshot_driver", {}).get("id") != snapshot_driver:
+        raise RuntimeError("ColdSnap local materialization snapshot driver differs from target")
+    if require_native and not _has_native_payloads(captured):
+        return None
+    return artifact_path
+
+
+def _has_native_payloads(artifact: Mapping[str, Any]) -> bool:
+    weights = artifact.get("weights", {})
+    return bool(weights.get("native") and _object_identities(artifact, "weights", "model_payloads", "objects"))
+
+
+def promote_local_materialization(
+    store: ArtifactStore, source_path: Path, captured_path: Path, *,
+    hardware: Mapping[str, Any], hosts: Sequence[str], snapshot_driver: str,
+    require_native: bool, verify,
+) -> Path:
+    """Verify the complete capture before making it selectable by normal run."""
+    identity = target_identity(hardware, hosts, snapshot_driver)
+    key = target_key(identity)
+    source_payload = _read_regular(source_path)
+    source = _decode_artifact(source_payload, source_path)
+    payload = _read_regular(captured_path)
+    captured = _decode_artifact(payload, captured_path)
+    _validate_local_materialization(source, captured)
+    if captured.get("snapshot_driver", {}).get("id") != snapshot_driver:
+        raise RuntimeError("ColdSnap materialization snapshot driver differs from target")
+    if require_native and not _has_native_payloads(captured):
+        raise RuntimeError("ColdSnap materialization produced no native payloads")
+    verify(captured_path)
+    # Verification can take minutes. Do not promote against a concurrently
+    # replaced source or a descriptor changed during the verification restore.
+    if _read_regular(source_path) != source_payload or _read_regular(captured_path) != payload:
+        raise RuntimeError("ColdSnap materialization descriptor changed during verification")
+    record = {
+        "format": 1, "kind": MATERIALIZATION_KIND, "target": identity,
+        "source_identity": _portable_identity(source), "artifact_sha256": _sha256(payload),
+        "verified": True,
+    }
+    root = store.overlay(key).parent
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    _atomic_write(store.overlay(key), payload)
+    _atomic_write(store.overlay_record(key), json.dumps(record, sort_keys=True).encode() + b"\n")
+    return store.overlay(key)
 
 
 def _retain_portable_weights(portable: Mapping[str, Any], captured: Mapping[str, Any]) -> dict[str, Any]:
@@ -332,8 +434,11 @@ def _atomic_write(path: Path, payload: bytes) -> None:
 
 
 __all__ = [
+    "promote_local_materialization",
     "promote_local_overlay",
+    "select_local_materialization",
     "select_local_overlay",
     "target_identity",
     "target_key",
+    "validate_materialization_source",
 ]

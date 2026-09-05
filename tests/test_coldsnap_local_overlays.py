@@ -11,10 +11,89 @@ import pytest
 
 from sparkrun.plugins.coldsnap.artifacts import ArtifactStore
 from sparkrun.plugins.coldsnap.local_overlays import (
+    promote_local_materialization,
     promote_local_overlay,
+    select_local_materialization,
     select_local_overlay,
     target_identity,
 )
+
+
+def _sglang_artifact(capture, driver="n580", native=True):
+    value = _artifact(capture, capsule_digest="sha256:" + capture)
+    value["snapshot_driver"]["id"] = driver
+    value["launch"]["engine"] = "sglang"
+    value["launch"]["units"] = [{"id": "unit-0", "index": 0, "devices": ["0"], "image_digest": "sha256:image"}]
+    if native:
+        value["weights"]["native"] = {"capture_id": capture}
+        value["weights"]["model_payloads"]["objects"][0]["sha256"] = "sha256:" + capture
+    else:
+        value["weights"].pop("model_payloads")
+    return value
+
+
+@pytest.mark.parametrize("driver", ["n580", "n610"])
+@pytest.mark.parametrize("native", [True, False])
+def test_sglang_materialization_keeps_capture_paired_and_source_unchanged(tmp_path, driver, native):
+    store = _store(tmp_path / "store")
+    source, captured = tmp_path / "source.json", tmp_path / "captured.json"
+    _write(source, _sglang_artifact("source", driver))
+    _write(captured, _sglang_artifact("generated", driver, native))
+    source_bytes, captured_bytes = source.read_bytes(), captured.read_bytes()
+    kwargs = dict(hardware={"h1": _hardware()}, hosts=("h1",), snapshot_driver=driver)
+    seen = []
+    def verify(path):
+        assert not store.overlay(target_identity_key(kwargs)).exists()
+        assert path == captured
+        seen.append(path)
+    selected = promote_local_materialization(store, source, captured, require_native=native, verify=verify, **kwargs)
+    assert seen == [captured]
+    assert source.read_bytes() == source_bytes
+    assert selected.read_bytes() == captured_bytes  # Never splice source native metadata into the new capture.
+    assert select_local_materialization(store, source, require_native=native, **kwargs) == selected
+    assert select_local_materialization(store, source, **{**kwargs, "hosts": ("h2",), "hardware": {"h2": _hardware()}}) is None
+    if not native:
+        assert select_local_materialization(store, source, require_native=True, **kwargs) is None
+    _write(source, _sglang_artifact("different-source", driver))
+    with pytest.raises(RuntimeError, match="source or target"):
+        select_local_materialization(store, source, **kwargs)
+
+
+def target_identity_key(kwargs):
+    from sparkrun.plugins.coldsnap.local_overlays import target_key
+    return target_key(target_identity(kwargs["hardware"], kwargs["hosts"], kwargs["snapshot_driver"]))
+
+
+@pytest.mark.parametrize("failure", ["verify", "changed-source", "changed-capture", "model", "execution", "image", "no-native"])
+def test_sglang_failed_materialization_never_replaces_selected_capture(tmp_path, failure):
+    store = _store(tmp_path / "store")
+    source, captured = tmp_path / "source.json", tmp_path / "captured.json"
+    _write(source, _sglang_artifact("source"))
+    value = _sglang_artifact("generated")
+    if failure == "model":
+        value["launch"]["model"]["revision"] = "wrong"
+    if failure == "execution":
+        value["launch"]["execution"]["adapter"]["digest"] = "wrong"
+    if failure == "image":
+        value["launch"]["units"][0]["image_digest"] = "wrong"
+    if failure == "no-native":
+        value["weights"].pop("native")
+    _write(captured, value)
+    kwargs = dict(hardware={"h1": _hardware()}, hosts=("h1",), snapshot_driver="n580")
+    key = target_identity_key(kwargs)
+    _write(store.overlay(key), {"old": "artifact"})
+    _write(store.overlay_record(key), {"old": "record"})
+    before = (store.overlay(key).read_bytes(), store.overlay_record(key).read_bytes())
+    def verify(path):
+        if failure == "verify":
+            raise RuntimeError("exact response verification failed")
+        if failure == "changed-source":
+            _write(source, _sglang_artifact("concurrent"))
+        if failure == "changed-capture":
+            _write(path, _sglang_artifact("concurrent"))
+    with pytest.raises(RuntimeError):
+        promote_local_materialization(store, source, captured, require_native=True, verify=verify, **kwargs)
+    assert (store.overlay(key).read_bytes(), store.overlay_record(key).read_bytes()) == before
 
 
 def _store(root: Path) -> ArtifactStore:

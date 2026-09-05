@@ -39,10 +39,13 @@ from sparkrun.plugins.coldsnap.compatibility import (
 )
 from sparkrun.plugins.coldsnap.host_provider import ColdSnapHostProvider
 from sparkrun.plugins.coldsnap.local_overlays import (
+    promote_local_materialization,
     promote_local_overlay,
+    select_local_materialization,
     select_local_overlay,
     target_identity,
     target_key,
+    validate_materialization_source,
 )
 from sparkrun.plugins.coldsnap.oci_artifacts import (
     configured_artifact_reference,
@@ -242,14 +245,14 @@ class ColdSnapService:
             snapshot_driver=snapshot_driver,
         )
         resolved_weight_mode = resolve_request_weight_mode(request)
+        sglang = request["launch"]["engine"] == "sglang"
         if (
             getattr(hardware, "verified", False)
-            and snapshot_driver == "n580"
             and not str(strategy_options.get("artifact") or "")
             # Target-local residual overlays are captured without a native
             # replay manifest. Explicit/cache-only native restores must keep
             # using the portable capsule while reusing any node-local payload.
-            and resolved_weight_mode not in {"native", "cache-only-auto"}
+            and (sglang or (snapshot_driver == "n580" and resolved_weight_mode not in {"native", "cache-only-auto"}))
         ):
             store = resolve_artifact_store(
                 plan=context.plan,
@@ -258,12 +261,14 @@ class ColdSnapService:
                 snapshot_driver=snapshot_driver,
             )
             try:
-                overlay = select_local_overlay(
+                selector = select_local_materialization if sglang else select_local_overlay
+                overlay = selector(
                     store,
                     Path(artifact),
                     hardware=hardware.hardware,
                     hosts=context.plan.host_list,
                     snapshot_driver=snapshot_driver,
+                    **({"require_native": resolved_weight_mode in {"native", "cache-only-auto"}} if sglang else {}),
                 )
             except RuntimeError as error:
                 # A target-local overlay is a disposable acceleration cache.
@@ -277,7 +282,7 @@ class ColdSnapService:
                 # Auto mode normally prefers a verified native cache. This
                 # overlay owns only recovery residual state, so make the
                 # compatible provider decision before native staging.
-                if resolved_weight_mode == "auto":
+                if resolved_weight_mode == "auto" and not sglang:
                     requested_weight_mode = "recovery"
                 request = build_request(
                     "restore",
@@ -489,6 +494,48 @@ class ColdSnapService:
                 probe_remote=not render_only,
             )
         return request, statuses
+
+    def materialize_sglang(self, options, *, plan, sctx, artifact, hardware, native_weights, verify) -> Path:
+        """Explicit capture/verify/promote; never recovery-loader write-behind."""
+        snapshot_driver = hardware.snapshot_driver
+        if str(plan.runtime.get_family()) != "sglang":
+            raise ValueError("capture-based materialization requires SGLang")
+        store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=snapshot_driver)
+        source = self._restore_artifact_path(
+            options, plan=plan, sctx=sctx, explicit=artifact, dry_run=False, snapshot_driver=snapshot_driver,
+        )
+        validate_materialization_source(source)
+        try:
+            existing = select_local_materialization(
+                store, source, hardware=hardware.hardware, hosts=plan.host_list,
+                snapshot_driver=snapshot_driver, require_native=native_weights,
+            )
+        except RuntimeError as error:
+            logger.warning("ColdSnap: replacing unusable local materialization: %s", error)
+            existing = None
+        if existing is not None:
+            # Fail visibly if a previously verified artifact lost its runtime
+            # assets; do not turn arbitrary inference failures into recaptures.
+            verify(existing)
+            return existing
+        store.overlay_pending.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with TemporaryDirectory(prefix="materialize-sglang-", dir=store.overlay_pending) as temporary:
+            output = Path(temporary) / "artifact.json"
+            logger.log(PROGRESS, "ColdSnap: capturing SGLang local %s", "native weights and runtime state" if native_weights else "runtime state")
+            self.execute_explicit(
+                "capture", options, plan=plan, sctx=sctx, output=str(output),
+                weight_mode="auto" if native_weights else "recovery",
+                snapshot_driver=snapshot_driver,
+                # Use SGLang's existing capture boundary on both drivers, not
+                # vLLM's n580 pre-worker-import residual optimization.
+                artifact_scope="portable",
+            )
+            result = promote_local_materialization(
+                store, source, output, hardware=hardware.hardware, hosts=plan.host_list,
+                snapshot_driver=snapshot_driver, require_native=native_weights, verify=verify,
+            )
+        logger.log(PROGRESS, "ColdSnap: verified SGLang local materialization %s", result)
+        return result
 
     def materialize_local_overlay(
         self,

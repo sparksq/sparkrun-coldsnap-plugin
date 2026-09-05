@@ -307,7 +307,7 @@ def build_command():
             snapshot_driver=snapshot_driver,
         )
 
-    @group.command("materialize", help=_recipe_help("Prepare and verify local vLLM restore assets."))
+    @group.command("materialize", help=_recipe_help("Prepare and verify local vLLM or SGLang restore assets."))
     @click.option(
         "--artifact",
         metavar="PATH",
@@ -327,7 +327,7 @@ def build_command():
         type=click.Choice(["auto", "required", "off"]),
         default="auto",
         show_default=True,
-        help="Capture and verify an n580 target-local overlay.",
+        help="Capture and verify local runtime state (vLLM: n580; SGLang: n580/n610).",
     )
     @common
     def materialize(
@@ -461,13 +461,13 @@ def build_command():
 def _resolve_materialization_policy(snapshot_driver, engine, native_weights, residual_overlay):
     if snapshot_driver not in {"n580", "n610"}:
         raise ValueError("materialization requires snapshot driver n580 or n610")
-    if engine != "vllm":
-        raise ValueError("local ColdSnap materialization currently requires vLLM")
+    if engine not in {"vllm", "sglang"}:
+        raise ValueError("local ColdSnap materialization requires vLLM or SGLang")
     if native_weights == "auto":
-        native_weights = "required" if snapshot_driver == "n610" else "off"
+        native_weights = "required" if engine == "sglang" or snapshot_driver == "n610" else "off"
     if residual_overlay == "auto":
-        residual_overlay = "required" if snapshot_driver == "n580" else "off"
-    if residual_overlay == "required" and snapshot_driver != "n580":
+        residual_overlay = "required" if engine == "sglang" or snapshot_driver == "n580" else "off"
+    if residual_overlay == "required" and engine == "vllm" and snapshot_driver != "n580":
         raise ValueError("target-local residual overlays require snapshot driver n580")
     if native_weights == "off" and residual_overlay == "off":
         raise ValueError("materialization resolved no local assets")
@@ -570,11 +570,44 @@ def _materialize(
             "residual_overlay": resolved_residual,
             "hardware_verified": not dry_run,
         }
+        if engine == "sglang":
+            resolved["method"] = "capture-and-verify"
         if dry_run:
             click.echo(json.dumps(resolved, indent=2, sort_keys=True))
             return
 
         service = ColdSnapService(binary)
+        if engine == "sglang":
+            def verify_sglang(path):
+                verify_options = replace(options, strategy_options={
+                    **base_strategy, "artifact": str(path), "snapshot_driver": selected_driver,
+                    "weights": "native" if resolved_native == "required" else "recovery",
+                    "materialize_native": "off",
+                })
+                verify_plan = api.plan(verify_options, sctx=sctx)
+                result = None
+                try:
+                    result = api.run(verify_options, plan=verify_plan, sctx=sctx)
+                    if result.rc:
+                        raise RuntimeError("ColdSnap SGLang materialized-asset verification failed with exit code %d" % result.rc)
+                finally:
+                    stopped = api.stop(
+                        cluster_id=getattr(result, "cluster_id", None) or verify_plan.cluster_id,
+                        hosts=verify_plan.host_list, cluster=verify_plan.cluster,
+                        cache_dir=options.cache_dir, sctx=sctx,
+                    )
+                    if not stopped.success:
+                        raise RuntimeError("ColdSnap SGLang verification cleanup failed: %s" % "; ".join(stopped.errors))
+
+            service.materialize_sglang(
+                options, plan=plan, sctx=sctx, artifact=artifact, hardware=hardware,
+                native_weights=resolved_native == "required", verify=verify_sglang,
+            )
+            click.echo("ColdSnap materialization ready: %s." % (
+                "native weights and matching runtime state" if resolved_native == "required" else "target-local runtime state"
+            ))
+            finish_timing()
+            return
         if resolved_native == "required":
             native_strategy = {
                 **base_strategy,
