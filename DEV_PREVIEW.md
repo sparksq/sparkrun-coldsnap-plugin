@@ -175,10 +175,20 @@ the required `runtime-v1` manager interface. Upgrade both together. Historical
 benchmark reports and raw logs are kept outside the public source repository;
 they are not timing guarantees for this release.
 
+The paired releases passed the existing-capsule TP2 driver matrix for
+Qwen3.8 27B FP8 on vLLM and SGLang and DeepSeek V4 Flash 0731 on vLLM, on
+both n580 and n610. The vLLM comparison separates default safetensors loading
+(`auto`), InstantTensor, ColdSnap recovery, and ColdSnap native. SGLang uses
+default loading, recovery, and native; its pinned image has no InstantTensor
+loader. Three page-cache-cleared samples per supported cell passed exact
+response validation, for 66 samples in total. This is same-placement restore
+qualification using existing immutable captures, not new capture,
+materialization, sleep/wake, cross-driver placement, or NVFP4/DSpark coverage.
+
 The n610 restores use the current `preserve-nccl-exec` default. Their first
 token is served only after restored CUDA graphs are ready. The n580 path remains
 eager-first with asynchronous graph preparation. For vLLM on n580, recovery is
-currently as fast as or faster than native weights, so sparkrun's default
+currently comparable to native weights in TP2 startup timing, so sparkrun's default
 materialization policy favors a target-local residual overlay and leaves native
 weights optional.
 
@@ -186,8 +196,8 @@ Use ColdSnap's
 [maintained benchmark harnesses](https://github.com/sparksq/coldsnap/blob/main/benchmarks/harnesses/README.md)
 to measure matched cases on your own qualified deployment. The
 [runtime-neutral manager guide](https://github.com/sparksq/coldsnap/blob/main/docs/runtime-neutral-managers.md)
-describes the focused Qwen restore qualification and remaining coverage gaps,
-including n610 recovery timing.
+describes the manager contract and verification boundaries. Fresh captures and
+live lifecycle operations require separate qualification from this TTFT matrix.
 
 ## Terms and identity boundaries
 
