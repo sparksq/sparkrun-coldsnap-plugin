@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Additional permission under AGPLv3 section 7: see src/sparkrun/plugins/coldsnap/LICENSE_EXCEPTION.
 
-"""Verified target-compatible residual overlays for portable artifacts."""
+"""Verified target-local captures and residual overlays for source artifacts."""
 
 from __future__ import annotations
 

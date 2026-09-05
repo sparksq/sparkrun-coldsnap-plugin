@@ -246,10 +246,11 @@ class ColdSnapService:
         )
         resolved_weight_mode = resolve_request_weight_mode(request)
         sglang = request["launch"]["engine"] == "sglang"
+        local_asset_kind = "local materialization" if sglang else "target-local residual overlay"
         if (
             getattr(hardware, "verified", False)
             and not str(strategy_options.get("artifact") or "")
-            # Target-local residual overlays are captured without a native
+            # vLLM's target-local residual overlays are captured without a native
             # replay manifest. Explicit/cache-only native restores must keep
             # using the portable capsule while reusing any node-local payload.
             and (sglang or (snapshot_driver == "n580" and resolved_weight_mode not in {"native", "cache-only-auto"}))
@@ -274,10 +275,10 @@ class ColdSnapService:
                 # A target-local overlay is a disposable acceleration cache.
                 # A stale/corrupt entry must never make the portable artifact
                 # unavailable; explicit materialization can replace it later.
-                logger.warning("ColdSnap: ignoring unusable target-local residual overlay: %s", error)
+                logger.warning("ColdSnap: ignoring unusable %s: %s", local_asset_kind, error)
                 overlay = None
             if overlay is not None:
-                logger.log(PROGRESS, "ColdSnap: using verified target-local residual overlay %s", overlay)
+                logger.log(PROGRESS, "ColdSnap: using verified %s %s", local_asset_kind, overlay)
                 artifact = overlay
                 # Auto mode normally prefers a verified native cache. This
                 # overlay owns only recovery residual state, so make the
