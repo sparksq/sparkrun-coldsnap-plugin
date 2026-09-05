@@ -194,11 +194,14 @@ def _validate_local_materialization(source: Mapping[str, Any], captured: Mapping
     for field in ("model", "execution"):
         if not before.get(field) or before[field] != after.get(field):
             raise RuntimeError("ColdSnap materialization changed the source %s" % field)
-    def images(launch):
-        return [(unit.get("id"), unit.get("index"), unit.get("devices"), unit.get("image_digest"))
+    def assignments(launch):
+        return [(unit.get("id"), unit.get("index"), unit.get("devices"))
                 for unit in launch.get("units", ())]
-    if not images(before) or images(before) != images(after):
-        raise RuntimeError("ColdSnap materialization changed source images or device assignments")
+    # The recipe's pinned base is rebuilt with the release-matched integration.
+    # Its derived Docker ID can change even without a serving-policy change.
+    # The new capsule is verified as a whole; no old image or pack is reused.
+    if not assignments(before) or assignments(before) != assignments(after):
+        raise RuntimeError("ColdSnap materialization changed source device assignments")
     if source.get("snapshot_driver") != captured.get("snapshot_driver"):
         raise RuntimeError("ColdSnap materialization changed the snapshot driver")
 

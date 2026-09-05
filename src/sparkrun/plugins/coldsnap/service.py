@@ -530,10 +530,19 @@ class ColdSnapService:
                 # vLLM's n580 pre-worker-import residual optimization.
                 artifact_scope="portable",
             )
-            result = promote_local_materialization(
-                store, source, output, hardware=hardware.hardware, hosts=plan.host_list,
-                snapshot_driver=snapshot_driver, require_native=native_weights, verify=verify,
-            )
+            try:
+                result = promote_local_materialization(
+                    store, source, output, hardware=hardware.hardware, hosts=plan.host_list,
+                    snapshot_driver=snapshot_driver, require_native=native_weights, verify=verify,
+                )
+            except BaseException:
+                # Preserve the diagnostic descriptor, but never make a failed
+                # verification selectable by run or overwrite the source.
+                if output.is_file():
+                    failed = store.overlay_pending / (output.parent.name + ".failed.json")
+                    output.replace(failed)
+                    logger.error("ColdSnap: unpromoted SGLang capture retained at %s", failed)
+                raise
         logger.log(PROGRESS, "ColdSnap: verified SGLang local materialization %s", result)
         return result
 

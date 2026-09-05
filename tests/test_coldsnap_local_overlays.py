@@ -38,7 +38,9 @@ def test_sglang_materialization_keeps_capture_paired_and_source_unchanged(tmp_pa
     store = _store(tmp_path / "store")
     source, captured = tmp_path / "source.json", tmp_path / "captured.json"
     _write(source, _sglang_artifact("source", driver))
-    _write(captured, _sglang_artifact("generated", driver, native))
+    generated = _sglang_artifact("generated", driver, native)
+    generated["launch"]["units"][0]["image_digest"] = "sha256:rebuilt-runtime"
+    _write(captured, generated)
     source_bytes, captured_bytes = source.read_bytes(), captured.read_bytes()
     kwargs = dict(hardware={"h1": _hardware()}, hosts=("h1",), snapshot_driver=driver)
     seen = []
@@ -64,7 +66,7 @@ def target_identity_key(kwargs):
     return target_key(target_identity(kwargs["hardware"], kwargs["hosts"], kwargs["snapshot_driver"]))
 
 
-@pytest.mark.parametrize("failure", ["verify", "changed-source", "changed-capture", "model", "execution", "image", "no-native"])
+@pytest.mark.parametrize("failure", ["verify", "changed-source", "changed-capture", "model", "execution", "devices", "no-native"])
 def test_sglang_failed_materialization_never_replaces_selected_capture(tmp_path, failure):
     store = _store(tmp_path / "store")
     source, captured = tmp_path / "source.json", tmp_path / "captured.json"
@@ -74,8 +76,8 @@ def test_sglang_failed_materialization_never_replaces_selected_capture(tmp_path,
         value["launch"]["model"]["revision"] = "wrong"
     if failure == "execution":
         value["launch"]["execution"]["adapter"]["digest"] = "wrong"
-    if failure == "image":
-        value["launch"]["units"][0]["image_digest"] = "wrong"
+    if failure == "devices":
+        value["launch"]["units"][0]["devices"] = ["wrong"]
     if failure == "no-native":
         value["weights"].pop("native")
     _write(captured, value)
