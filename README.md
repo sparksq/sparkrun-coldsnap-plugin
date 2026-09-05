@@ -99,6 +99,39 @@ Changes are made and tested here first. sparkrun then imports an approved full
 commit with its `scripts/vendor-coldsnap.py` command. Files in sparkrun's
 vendored source and test directories should not be edited directly.
 
+## CI and releases
+
+Scitrera repo-tools generates the Python test and version-check workflows from
+`versions.yaml`. Its source is pinned to an immutable commit in the catalog and
+both script shims. After editing the CI configuration, regenerate and check:
+
+```bash
+python scripts/generate-ci-gha.py --force
+python scripts/generate-ci-gha.py --check
+```
+
+Pushes to `main` and pull requests targeting `main` run Ruff and the test suite
+on Python 3.12 and 3.13 against the published Sparkrun 0.3.7 host. Each matrix job
+also checks version synchronization and generated-workflow drift. The optional
+Go/Python and local Docker integration tests require the environment variables
+described below and are skipped on these standard CI runners; GPU qualification
+is separate.
+
+Pushing a `v*.*.*` tag invokes `.github/workflows/release.yml`. It reuses the same
+test matrix, requires the tag to match the plugin version in `versions.yaml`,
+builds and checks the wheel and source distribution, and creates a GitHub release
+with both distributions and SHA-256 checksums only after all gates pass. The
+release workflow is repository-owned because repo-tools' generated Python
+publisher also uploads to PyPI; this repository does **not** publish to PyPI.
+Only the final release job receives `contents: write`; the built-in GitHub token
+is sufficient, with no PyPI credentials or external publishing secrets needed.
+
+For a release, update `versions.yaml`, run version synchronization and the checks
+above, merge the reviewed commit to `main`, wait for CI, then push the matching
+tag. A plugin-only CI or documentation change does not require changing the
+ColdSnap controller pin. Sparkrun's commit-pinned vendoring remains the supported
+distribution path; GitHub release assets do not replace that approval process.
+
 ## Controller acquisition
 
 The plugin resolves the release-pinned ColdSnap controller, vLLM adapter,

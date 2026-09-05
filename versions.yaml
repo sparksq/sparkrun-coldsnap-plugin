@@ -5,6 +5,7 @@
 # Authoritative plugin and ColdSnap controller versions.
 # Run: python scripts/update-versions.py
 # Run: python scripts/update-versions.py --check
+# Run: python scripts/generate-ci-gha.py --check
 
 sparkrun-coldsnap-plugin: 0.1.1
 coldsnap: 0.3.20
@@ -15,3 +16,24 @@ project_rules:
     - { type: init_py, path: src/sparkrun/plugins/coldsnap/__init__.py }
   coldsnap:
     - { type: init_py, path: src/sparkrun/plugins/coldsnap/_controller_version.py }
+
+preferred_versions:
+  python:
+    ruff: "0.15.9"
+
+ci:
+  repo_tools_source: "git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8"
+  test_branches: [main]
+  push_branches: [main]
+  # repo-tools' Python publisher also uploads to PyPI. This vendored plugin
+  # uses a repository-owned, GitHub-only release workflow instead.
+  only_workflows: [version-check, test-python]
+  python:
+    test_versions: ["3.12", "3.13"]
+    install: uv pip install --system -e . --group dev 'sparkrun==0.3.7'
+    test_command: python -m pytest -v
+    extra_steps:
+      - name: Verify versions are in sync
+        run: python scripts/update-versions.py --check
+      - name: Verify generated workflows
+        run: python scripts/generate-ci-gha.py --check

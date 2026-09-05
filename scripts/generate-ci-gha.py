@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Fox Engine Ltd
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Run scitrera-repo-tools version synchronization for this checkout."""
+"""Generate plugin workflows from versions.yaml via scitrera-repo-tools."""
 
 from __future__ import annotations
 
@@ -21,19 +21,19 @@ def _try_uvx(args: List[str]) -> None:
         return
     source = os.environ.get("REPO_TOOLS_SOURCE", DEFAULT_SOURCE)
     if os.path.basename(uv) == "uv":
-        command = [uv, "tool", "run", "--from", source, "sync-versions", *args]
+        command = [uv, "tool", "run", "--from", source, "generate-ci-gha", *args]
     else:
-        command = [uv, "--from", source, "sync-versions", *args]
+        command = [uv, "--from", source, "generate-ci-gha", *args]
     os.execvp(command[0], command)
 
 
 def _try_import(args: List[str]) -> bool:
     try:
-        from scitrera_repo_tools.version_sync.cli import main as sync_main
+        from scitrera_repo_tools.ci_gen_gha.cli import main as generate_main
     except ImportError:
         return False
-    sys.argv = ["sync-versions", *args]
-    sync_main()
+    sys.argv = ["generate-ci-gha", *args]
+    generate_main()
     return True
 
 

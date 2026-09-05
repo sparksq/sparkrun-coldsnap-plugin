@@ -38,5 +38,5 @@ select = ["E4", "E7", "E9", "F", "B"]
 dev = [
     "pre-commit>=4.5.1",
     "pytest==9.0.3",
-    "ruff>=0.15.9",
+    "ruff==0.15.9",
 ]

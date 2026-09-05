@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Fox Engine Ltd
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Repository-owned: repo-tools' Python publisher requires a PyPI upload.
+# Reuse its generated tests and version synchronization without publishing
+# this vendored plugin to a package registry.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/test-python.yml
+
+  build:
+    name: Verify tag and build distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.9.17'
+
+      - name: Verify versions are in sync
+        run: python scripts/update-versions.py --check
+
+      - name: Verify generated workflows
+        run: python scripts/generate-ci-gha.py --check
+
+      - name: Compare tag against versions.yaml
+        run: |
+          set -euo pipefail
+          declared="$(python scripts/update-versions.py --print-version sparkrun-coldsnap-plugin)"
+          if [ "$GITHUB_REF_NAME" != "v$declared" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the plugin version in versions.yaml ($declared)"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: uv build --no-sources
+
+      - name: Check distributions
+        run: uvx --from twine==6.2.0 twine check --strict dist/*
+
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum -- *.whl *.tar.gz > checksums.txt
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: plugin-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  github-release:
+    name: Create GitHub release
+    needs: [tests, build]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: plugin-distributions
+          path: dist/
+
+      - name: Verify checksums
+        working-directory: dist
+        run: sha256sum --check checksums.txt
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
