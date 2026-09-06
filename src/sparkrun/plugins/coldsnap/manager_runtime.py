@@ -84,6 +84,8 @@ class DockerManagerRuntime:
                     raise
             return {}
         if action == "workload-inspect":
+            # Older controllers strictly decode responses: opt in to new fields.
+            start_time = '"started_at":{{json .State.StartedAt}},' if request.get("include_start_time") else ""
             result = self._execute(
                 host,
                 [
@@ -92,7 +94,7 @@ class DockerManagerRuntime:
                     "--format",
                     '{"id":{{json .Id}},"image":{{json .Config.Image}},"state":{{json .State.Status}},'
                     '"exit_code":{{json .State.ExitCode}},"running":{{json .State.Running}},'
-                    '"paused":{{json .State.Paused}},"labels":{{json .Config.Labels}}}',
+                    '"paused":{{json .State.Paused}},' + start_time + '"labels":{{json .Config.Labels}}}',
                     request["name"],
                 ],
                 "workload inspection",

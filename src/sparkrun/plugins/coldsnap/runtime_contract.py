@@ -154,7 +154,7 @@ def validate_runtime_request(request):
         "image-build": ({"build": _build}, {"build"}),
         "workload-run": ({"workload": _workload}, {"workload"}),
         "workload-remove": ({"name": _reference}, {"name"}),
-        "workload-inspect": ({"name": _reference}, {"name"}),
+        "workload-inspect": ({"name": _reference, "include_start_time": _BOOL}, {"name"}),
         "workload-exec": ({"name": _reference, "execution": _execution}, {"name", "execution"}),
         "workload-logs": ({"name": _reference, "tail": _NONNEGATIVE}, {"name"}),
         "workload-copy-from": ({"name": _reference, "path": _path, "destination": _path}, {"name", "path", "destination"}),

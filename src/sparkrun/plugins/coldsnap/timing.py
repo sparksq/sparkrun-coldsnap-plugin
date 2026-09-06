@@ -441,6 +441,52 @@ def read_operation_receipt(path: Path, request: Mapping[str, Any], returncode: i
     return receipt
 
 
+def startup_observation(receipt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project already-validated controller spans into the host readiness contract."""
+    if receipt is None or receipt.get("state") != "succeeded":
+        return {}
+    timing = receipt["timing"]
+    clocks = {clock["id"]: clock for clock in timing["clocks"]}
+    spans = {
+        span["name"]: span
+        for span in timing["spans"]
+        if span.get("status") == "ok" and span.get("attributes", {}).get("measurement") == "rank0-acceptance-v1"
+    }
+    first = spans.get("runtime.startup_ttft")
+    if first is None:
+        return {}
+    clock = clocks[first["clock"]]
+    attributes = first["attributes"]
+    if attributes.get("observer") != "rank0" or attributes.get("response_validated") != "true":
+        return {}
+    result = {
+        "format": 1,
+        "measurement": "rank0-acceptance-v1",
+        "observer": "rank0",
+        "container_id": attributes["container_id"],
+        "container_started_unix_ns": clock["origin_unix_ns"],
+        "first_token_field": attributes["first_token_field"],
+        "inference_ready": True,
+        "response_validated": True,
+        "http_ready_path": "/health",
+    }
+    for key in ("observer_started_unix_ns", "max_tokens"):
+        value = attributes.get(key, "")
+        if value.isdecimal() and int(value) > 0:
+            result[key] = int(value)
+    if attributes.get("prompt_sha256"):
+        result["prompt_sha256"] = attributes["prompt_sha256"]
+    for name, key in (
+        ("runtime.startup_ttft", "first_token_unix_ns"),
+        ("runtime.startup_port_open", "port_open_unix_ns"),
+        ("runtime.startup_http_ready", "http_ready_unix_ns"),
+    ):
+        span = spans.get(name)
+        if span is not None and span["clock"] == first["clock"]:
+            result[key] = clock["origin_unix_ns"] + round(span["duration_seconds"] * 1e9)
+    return result
+
+
 def import_operation_timing(timeline: Timeline | None, receipt: Mapping[str, Any] | None, parent: int | None) -> int:
     if timeline is None or receipt is None or parent is None:
         return 0

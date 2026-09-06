@@ -47,6 +47,30 @@ sparkrun registry commands.
 
 ## Development
 
+The `feature/rank0-startup-ttft` development work adds a startup-readiness
+handoff to Sparkrun's matching `develop-next` implementation. With the matching
+ColdSnap controller source, running restores log Docker-start-to-port-open,
+Docker-start-to-HTTP-health, and Docker-start-to-first-nonempty-token timings,
+all observed on rank 0. ColdSnap's existing acceptance request now streams and
+still validates the entire final reply; the plugin passes that observation to
+the host so it does not run a second inference. Warm restores do not claim TTFT.
+
+This is not included in plugin 0.1.4 or its pinned ColdSnap 0.3.21 controller.
+Use `sparkrun coldsnap restore --coldsnap-binary /path/to/coldsnap` and the
+matching sibling tools while testing (`COLDSNAP_BINARY` selects it in the
+benchmark harness). The optional host handoff remains compatible with published Sparkrun
+0.3.7: older hosts do not receive an unsupported constructor argument, and old
+controllers without timing receipts do not gain invented measurements.
+`workload-inspect` returns Docker's nanosecond start timestamp only when the
+controller explicitly requests `include_start_time: true`, preserving the
+older strict response schema.
+
+The three startup durations overlap and must not be summed. Port/HTTP health
+can precede real inference. These measurements exclude preparation before
+container start and differ from the historical external TTFT observer; new
+qualification comparisons must use matched profiles and fresh runs. Normal
+Sparkrun `--no-follow` behavior stays non-blocking.
+
 Set up and activate the development environment from the repository root:
 
 ```bash

@@ -73,6 +73,7 @@ from sparkrun.plugins.coldsnap.timing import (
     follow_operation_timing_events,
     import_operation_timing,
     read_operation_receipt,
+    startup_observation,
 )
 from sparkrun.plugins.coldsnap.tool import (
     ControllerTool,
@@ -438,6 +439,11 @@ class ColdSnapService:
             sctx=context.execution.sctx,
             cluster=context.execution.plan.cluster,
         )
+        # Published 0.3.7 and older develop-next hosts lack this optional field.
+        observation = getattr(completed, "startup_observation", {})
+        readiness = (
+            {"startup_observation": observation} if "startup_observation" in getattr(ActivationResult, "__dataclass_fields__", {}) else {}
+        )
         return ActivationResult(
             completed.returncode,
             {
@@ -446,7 +452,11 @@ class ColdSnapService:
                 "capture_id": str(activation.receipt.get("capture_id") or ""),
                 "snapshot_driver": activation.request["snapshot_driver"]["id"],
                 "lifecycle_state": activation.request.get("lifecycle", {}).get("activation_state", "running"),
+                "inference_readiness": (
+                    "accepted" if activation.request.get("lifecycle", {}).get("activation_state", "running") == "running" else "inactive"
+                ),
             },
+            **readiness,
         )
 
     def inspect_native_status(
@@ -506,13 +516,22 @@ class ColdSnapService:
             raise ValueError("capture-based materialization requires SGLang")
         store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=snapshot_driver)
         source = self._restore_artifact_path(
-            options, plan=plan, sctx=sctx, explicit=artifact, dry_run=False, snapshot_driver=snapshot_driver,
+            options,
+            plan=plan,
+            sctx=sctx,
+            explicit=artifact,
+            dry_run=False,
+            snapshot_driver=snapshot_driver,
         )
         validate_materialization_source(source)
         try:
             existing = select_local_materialization(
-                store, source, hardware=hardware.hardware, hosts=plan.host_list,
-                snapshot_driver=snapshot_driver, require_native=native_weights,
+                store,
+                source,
+                hardware=hardware.hardware,
+                hosts=plan.host_list,
+                snapshot_driver=snapshot_driver,
+                require_native=native_weights,
             )
         except RuntimeError as error:
             logger.warning("ColdSnap: replacing unusable local materialization: %s", error)
@@ -525,9 +544,15 @@ class ColdSnapService:
         store.overlay_pending.mkdir(parents=True, exist_ok=True, mode=0o700)
         with TemporaryDirectory(prefix="materialize-sglang-", dir=store.overlay_pending) as temporary:
             output = Path(temporary) / "artifact.json"
-            logger.log(PROGRESS, "ColdSnap: capturing SGLang local %s", "native weights and runtime state" if native_weights else "runtime state")
+            logger.log(
+                PROGRESS, "ColdSnap: capturing SGLang local %s", "native weights and runtime state" if native_weights else "runtime state"
+            )
             self.execute_explicit(
-                "capture", options, plan=plan, sctx=sctx, output=str(output),
+                "capture",
+                options,
+                plan=plan,
+                sctx=sctx,
+                output=str(output),
                 weight_mode="auto" if native_weights else "recovery",
                 snapshot_driver=snapshot_driver,
                 # Use SGLang's existing capture boundary on both drivers, not
@@ -536,8 +561,14 @@ class ColdSnapService:
             )
             try:
                 result = promote_local_materialization(
-                    store, source, output, hardware=hardware.hardware, hosts=plan.host_list,
-                    snapshot_driver=snapshot_driver, require_native=native_weights, verify=verify,
+                    store,
+                    source,
+                    output,
+                    hardware=hardware.hardware,
+                    hosts=plan.host_list,
+                    snapshot_driver=snapshot_driver,
+                    require_native=native_weights,
+                    verify=verify,
                 )
             except BaseException:
                 # Preserve the diagnostic descriptor, but never make a failed
@@ -670,7 +701,11 @@ class ColdSnapService:
                 store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=snapshot_driver)
                 try:
                     local = select_local_materialization(
-                        store, artifact_path, hardware=hardware.hardware, hosts=plan.host_list, snapshot_driver=snapshot_driver,
+                        store,
+                        artifact_path,
+                        hardware=hardware.hardware,
+                        hosts=plan.host_list,
+                        snapshot_driver=snapshot_driver,
                     )
                 except RuntimeError as error:
                     logger.warning("ColdSnap: ignoring unusable local materialization for lifecycle control: %s", error)
@@ -885,7 +920,11 @@ class ColdSnapService:
 
         engine = "sglang" if plan.runtime.runtime_name == "sglang" else "vllm"
         return self.target_tool_resolver(
-            hosts=plan.host_list, engine=engine, cluster=plan.cluster, sctx=sctx, binary=binary or self.binary,
+            hosts=plan.host_list,
+            engine=engine,
+            cluster=plan.cluster,
+            sctx=sctx,
+            binary=binary or self.binary,
         ).verifier
 
     def _restore_artifact_path(
@@ -949,7 +988,10 @@ class ColdSnapService:
             if request["operation"] in {"capture", "restore", "publish-native"}:
                 target_tools = self.target_tool_resolver(
                     hosts=[str(unit["host"]) for unit in request["launch"]["units"]],
-                    engine=request["launch"]["engine"], cluster=cluster, sctx=sctx, binary=binary or self.binary,
+                    engine=request["launch"]["engine"],
+                    cluster=cluster,
+                    sctx=sctx,
+                    binary=binary or self.binary,
                 )
                 environment = {**os.environ, **(environment or {}), **target_tools.environment}
             site_policy = resolve_coldsnap_policy(
@@ -1066,6 +1108,7 @@ class ColdSnapService:
                         if event_thread.is_alive():
                             event_errors.append(RuntimeError("ColdSnap timing event reader did not stop"))
                 receipt = read_operation_receipt(receipt_path, request, completed.returncode)
+                completed.startup_observation = startup_observation(receipt)
                 if event_errors:
                     logger.warning("ColdSnap timing event stream was not usable: %s", event_errors[0])
                 elif event_streams and receipt is not None:

@@ -288,6 +288,7 @@ def test_go_runtime_round_trip(tmp_path, real_docker):
                         "state": "running",
                         "running": True,
                         "labels": {"sparkrun.cluster_id": "runtime-contract"},
+                        **({"started_at": "2026-09-06T12:00:00.123456789Z"} if ".State.StartedAt" in arguments[3] else {}),
                     }
                 ).encode()
             elif arguments[1] == "exec":
@@ -332,3 +333,22 @@ def test_go_runtime_round_trip(tmp_path, real_docker):
             timeout=60,
         )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_started_at_is_opt_in_and_boolean():
+    class InspectionSession(_Session):
+        def execute(self, host, arguments, **kwargs):
+            super().execute(host, arguments, **kwargs)
+            payload = {"id": "head"}
+            if ".State.StartedAt" in arguments[3]:
+                payload["started_at"] = "2026-09-06T12:00:00.123456789Z"
+            return HostCommandResult(host, 0, json.dumps(payload).encode(), b"")
+
+    session = InspectionSession()
+    runtime = DockerManagerRuntime(session)
+    basic = runtime.invoke("host", {"action": "workload-inspect", "name": "head"})
+    assert "started_at" not in basic["workload"]
+    extended = runtime.invoke("host", {"action": "workload-inspect", "name": "head", "include_start_time": True})
+    assert extended["workload"]["started_at"].endswith("123456789Z")
+    with pytest.raises(HostSessionError):
+        runtime.invoke("host", {"action": "workload-inspect", "name": "head", "include_start_time": "true"})
