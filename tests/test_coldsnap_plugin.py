@@ -312,8 +312,10 @@ def test_payload_verifier_checks_remote_release_identity_even_on_cache_hit(tmp_p
         for host in plan.host_list:
             session.files[(host, target)] = verifier.read_bytes()
     monkeypatch.setattr("sparkrun.transports.open_cluster_host_session", lambda *_args, **_kwargs: session)
+
     def stage():
         return _stage_payload_verifier(verifier, request=request, plan=plan, state_root="/cache/coldsnap", ssh_kwargs={})
+
     if matching:
         assert stage() == target
         assert sorted(session.identity_checks) == sorted(plan.host_list)
@@ -1287,19 +1289,35 @@ def test_sglang_lifecycle_follows_materialized_capture_but_respects_explicit_art
     monkeypatch.setattr(ColdSnapService, "_restore_artifact_path", lambda *args, **kwargs: source)
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.resolve_artifact_store", lambda **kwargs: object())
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.select_local_materialization", lambda *args, **kwargs: local)
-    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts",
-                        lambda *args, **kwargs: SimpleNamespace(verified=True, snapshot_driver=driver, hardware={}))
+    monkeypatch.setattr(
+        "sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts",
+        lambda *args, **kwargs: SimpleNamespace(verified=True, snapshot_driver=driver, hardware={}),
+    )
     monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *args, **kwargs: plan.cluster_id)
+
     def invoke(self, request, **kwargs):
         assert request["artifact"] == str(expected)
-        return SimpleNamespace(stdout=json.dumps({
-            "format": 1, "kind": "coldsnap-inference-lifecycle", "engine": "sglang",
-            "operation_id": request["id"], "operation": operation, "cluster_id": plan.cluster_id,
-            "capture_id": expected.stem, "snapshot_driver": driver, "state": "running", "units": [{}, {}],
-        }))
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "format": 1,
+                    "kind": "coldsnap-inference-lifecycle",
+                    "engine": "sglang",
+                    "operation_id": request["id"],
+                    "operation": operation,
+                    "cluster_id": plan.cluster_id,
+                    "capture_id": expected.stem,
+                    "snapshot_driver": driver,
+                    "state": "running",
+                    "units": [{}, {}],
+                }
+            )
+        )
+
     monkeypatch.setattr(ColdSnapService, "_invoke", invoke)
-    request, report = ColdSnapService().execute_lifecycle(operation, options, plan=plan, sctx=sctx,
-                                                         artifact=str(source) if explicit else "")
+    request, report = ColdSnapService().execute_lifecycle(
+        operation, options, plan=plan, sctx=sctx, artifact=str(source) if explicit else ""
+    )
     assert report["capture_id"] == expected.stem
 
 
@@ -1307,6 +1325,7 @@ def test_sglang_lifecycle_follows_materialized_capture_but_respects_explicit_art
 @pytest.mark.parametrize("native,residual", [("auto", "auto"), ("required", "off"), ("off", "required")])
 def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypatch, tmp_path, driver, native, residual):
     from click.testing import CliRunner
+
     _recipe, _options, plan, sctx = _sglang_setup()
     events = []
     candidate = tmp_path / "candidate.json"
@@ -1314,6 +1333,7 @@ def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypat
     monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
     monkeypatch.setattr(api, "plan", lambda options, sctx=None: plan)
     monkeypatch.setattr("sparkrun.plugins.coldsnap.compatibility.verify_coldsnap_hosts", lambda *args, **kwargs: hardware)
+
     def capture(self, options, **kwargs):
         assert kwargs["native_weights"] is (native != "off")
         assert kwargs["hardware"] is hardware
@@ -1321,24 +1341,39 @@ def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypat
         kwargs["verify"](candidate)
         events.append("promote")
         return candidate
+
     def run(options, **kwargs):
         assert options.strategy_options["artifact"] == str(candidate)
         assert options.strategy_options["materialize_native"] == "off"
         assert options.strategy_options["weights"] == ("recovery" if native == "off" else "native")
         events.append("verify")
-        return SimpleNamespace(rc=0, cluster_id="verification-job")
+        assert options.cluster_id_override == kwargs["plan"].cluster_id != plan.cluster_id
+        return SimpleNamespace(rc=0, cluster_id=options.cluster_id_override)
+
     def stop(**kwargs):
-        assert kwargs["cluster_id"] == "verification-job"
+        assert kwargs["cluster_id"] != plan.cluster_id
         assert kwargs["hosts"] == plan.host_list
         events.append("cleanup")
         return SimpleNamespace(success=True)
+
     monkeypatch.setattr(ColdSnapService, "materialize_sglang", capture)
     monkeypatch.setattr(api, "run", run)
     monkeypatch.setattr(api, "stop", stop)
-    result = CliRunner().invoke(build_command(), [
-        "materialize", "recipe.yaml", "--cluster", "cluster", "--snapshot-driver", driver,
-        "--native-weights", native, "--residual-overlay", residual,
-    ])
+    result = CliRunner().invoke(
+        build_command(),
+        [
+            "materialize",
+            "recipe.yaml",
+            "--cluster",
+            "cluster",
+            "--snapshot-driver",
+            driver,
+            "--native-weights",
+            native,
+            "--residual-overlay",
+            residual,
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert events == ["capture", "verify", "cleanup", "promote"]
     assert "materialization ready" in result.output
@@ -1347,6 +1382,7 @@ def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypat
 @pytest.mark.parametrize("driver", ["n580", "n610"])
 def test_sglang_materialize_dry_run_is_capture_plan_without_cluster_changes(monkeypatch, driver):
     from click.testing import CliRunner
+
     _recipe, _options, plan, sctx = _sglang_setup()
     monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
     monkeypatch.setattr(api, "plan", lambda options, sctx=None: plan)
@@ -1363,18 +1399,25 @@ def test_sglang_materialize_dry_run_is_capture_plan_without_cluster_changes(monk
 @pytest.mark.parametrize("failure", ["restore", "cleanup"])
 def test_sglang_materialize_failed_verification_cleans_up_and_never_reports_ready(monkeypatch, tmp_path, failure):
     from click.testing import CliRunner
+
     _recipe, _options, plan, sctx = _sglang_setup()
     events = []
     monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
     monkeypatch.setattr(api, "plan", lambda options, sctx=None: plan)
-    monkeypatch.setattr("sparkrun.plugins.coldsnap.compatibility.verify_coldsnap_hosts",
-                        lambda *args, **kwargs: SimpleNamespace(snapshot_driver="n610", hardware={}))
+    monkeypatch.setattr(
+        "sparkrun.plugins.coldsnap.compatibility.verify_coldsnap_hosts",
+        lambda *args, **kwargs: SimpleNamespace(snapshot_driver="n610", hardware={}),
+    )
+
     def materialize(self, options, **kwargs):
         kwargs["verify"](tmp_path / "candidate.json")
         pytest.fail("failed verification reached promotion")
+
     monkeypatch.setattr(ColdSnapService, "materialize_sglang", materialize)
     monkeypatch.setattr(api, "run", lambda *args, **kwargs: SimpleNamespace(rc=1 if failure == "restore" else 0))
-    monkeypatch.setattr(api, "stop", lambda **kwargs: events.append("stop") or SimpleNamespace(success=failure != "cleanup", errors=("stop failed",)))
+    monkeypatch.setattr(
+        api, "stop", lambda **kwargs: events.append("stop") or SimpleNamespace(success=failure != "cleanup", errors=("stop failed",))
+    )
     result = CliRunner().invoke(build_command(), ["materialize", "recipe.yaml", "--cluster", "cluster"])
     assert result.exit_code == 1
     assert events == ["stop"]
@@ -1392,6 +1435,7 @@ def test_sglang_materialization_service_uses_capture_writer_and_does_not_promote
     monkeypatch.setattr(ColdSnapService, "_restore_artifact_path", lambda *args, **kwargs: source)
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.validate_materialization_source", lambda path: events.append("source"))
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.select_local_materialization", lambda *args, **kwargs: None)
+
     def capture(self, operation, options, **kwargs):
         events.append("capture")
         assert operation == "capture"
@@ -1399,16 +1443,19 @@ def test_sglang_materialization_service_uses_capture_writer_and_does_not_promote
         assert kwargs["artifact_scope"] == "portable"
         assert kwargs["output"]  # Explicit output suppresses managed current.json/generation promotion.
         Path(kwargs["output"]).write_text("{}")
+
     def promote(store_arg, source_arg, path, **kwargs):
         assert source_arg == source and store_arg is store
         assert kwargs["require_native"] is native
         kwargs["verify"](path)
         events.append("promote")
         return local
+
     monkeypatch.setattr(ColdSnapService, "execute_explicit", capture)
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.promote_local_materialization", promote)
-    result = ColdSnapService().materialize_sglang(options, plan=plan, sctx=sctx, artifact="", hardware=hardware,
-                                               native_weights=native, verify=lambda path: events.append("verify"))
+    result = ColdSnapService().materialize_sglang(
+        options, plan=plan, sctx=sctx, artifact="", hardware=hardware, native_weights=native, verify=lambda path: events.append("verify")
+    )
     assert result == local
     assert events == ["source", "capture", "verify", "promote"]
 
@@ -1423,8 +1470,13 @@ def test_sglang_materialization_reuses_verified_capture_without_recapture(monkey
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.select_local_materialization", lambda *args, **kwargs: local)
     monkeypatch.setattr(ColdSnapService, "execute_explicit", lambda *args, **kwargs: pytest.fail("recapture"))
     result = ColdSnapService().materialize_sglang(
-        options, plan=plan, sctx=sctx, artifact="", hardware=SimpleNamespace(snapshot_driver="n580", hardware={}),
-        native_weights=True, verify=lambda path: events.append(path),
+        options,
+        plan=plan,
+        sctx=sctx,
+        artifact="",
+        hardware=SimpleNamespace(snapshot_driver="n580", hardware={}),
+        native_weights=True,
+        verify=lambda path: events.append(path),
     )
     assert result == local and events == [local]
 
@@ -1455,6 +1507,7 @@ def test_materialize_n610_auto_requires_only_native_weights(monkeypatch):
 
     _recipe, _options, plan, sctx = _setup()
     seen = []
+    monkeypatch.setattr(api, "stop", lambda **kwargs: SimpleNamespace(success=True))
     monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
     monkeypatch.setattr(api, "plan", lambda options, sctx=None: plan)
     monkeypatch.setattr(
@@ -1492,6 +1545,7 @@ def test_materialize_n580_auto_captures_residuals_without_native_weights(monkeyp
 
     _recipe, _options, plan, sctx = _setup()
     seen = []
+    monkeypatch.setattr(api, "stop", lambda **kwargs: SimpleNamespace(success=True))
     captures = []
     overlay = tmp_path / "overlay.json"
     monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
@@ -1761,7 +1815,9 @@ def test_explicit_capture_uses_shared_prepared_image_identities(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     request, removed, failures = ColdSnapService(
-        "coldsnap", run_command=invoke, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+        "coldsnap",
+        run_command=invoke,
+        target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
     ).execute_explicit(
         "capture",
         options,
@@ -2003,7 +2059,9 @@ def test_publication_promotes_same_capture_as_new_descriptor_generation(tmp_path
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     request, removed, failures = ColdSnapService(
-        "coldsnap", run_command=invoke, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+        "coldsnap",
+        run_command=invoke,
+        target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
     ).execute_explicit(
         "publish",
         options,
@@ -2073,7 +2131,9 @@ def test_native_publication_promotes_provider_and_refreshes_portable_descriptor(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     request, removed, failures = ColdSnapService(
-        "coldsnap", run_command=invoke, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+        "coldsnap",
+        run_command=invoke,
+        target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
     ).execute_explicit(
         "publish-native",
         options,
@@ -2926,6 +2986,7 @@ def test_strategy_native_staging_uses_explicit_controller_adapter(tmp_path, monk
         return SimpleNamespace(request=current, selected_mode="recovery", failures=())
 
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.stage_native_packs", stage)
+
     def target_resolver(**kwargs):
         assert kwargs["binary"] == str(controller)
         assert kwargs["engine"] == "vllm"
@@ -2933,7 +2994,8 @@ def test_strategy_native_staging_uses_explicit_controller_adapter(tmp_path, monk
         return SimpleNamespace(verifier=adapter)
 
     service = ColdSnapService(
-        tool_resolver=lambda _config: pytest.fail("managed controller was resolved"), target_tool_resolver=target_resolver,
+        tool_resolver=lambda _config: pytest.fail("managed controller was resolved"),
+        target_tool_resolver=target_resolver,
     )
     state = service.stage_restore(
         ExecutionContext(options=options, plan=plan, sctx=sctx),
@@ -3022,7 +3084,9 @@ def test_coldsnap_prepare_only_receipt_precedes_activation(tmp_path, monkeypatch
         lambda request, **_kwargs: SimpleNamespace(request=request, selected_mode="recovery", failures=()),
     )
     service = ColdSnapService(
-        "coldsnap-test", run_command=run_command, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+        "coldsnap-test",
+        run_command=run_command,
+        target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
     )
     execution = ExecutionContext(options=options, plan=plan, sctx=sctx)
     descriptor = service.describe_restore(execution)

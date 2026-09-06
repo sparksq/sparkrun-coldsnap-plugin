@@ -39,7 +39,12 @@ _PROGRESS_ACTIONS: dict[str, tuple[str, str, str, int]] = {
     "capsule.verify": ("verifying capsule", "verifying capsules", "unit", 20),
     "nccl.verify": ("verifying capsule NCCL providers", "verifying capsule NCCL providers", "nodes", 10),
     "restore.prepare": ("preparing restore prerequisites", "preparing restore prerequisites", "nodes", 10),
-    "materialization.prepare": ("preparing native-weight materialization", "preparing native-weight materialization", "nodes", 10),
+    "materialization.prepare": (
+        "configuring native-weight caching for restore",
+        "configuring native-weight caching for restore",
+        "nodes",
+        10,
+    ),
     "coordinator.start": ("starting the coordination service", "starting the coordination service", "head", 20),
     "network.port_select": ("selecting collision-free restore ports", "selecting collision-free restore ports", "nodes", 20),
     "units.launch": ("launching workload units", "launching workload units", "nodes", 10),
@@ -66,6 +71,8 @@ class OperationTimingProgress:
     """Turn validated timing events into concise, node-aware status text."""
 
     def __init__(self, request: Mapping[str, Any]):
+        weights = request.get("policy", {}).get("weights", {})
+        self.required_generation = weights.get("mode") != "native" and weights.get("native", {}).get("materialize") == "required"
         units = request.get("launch", {}).get("units", [])
         self.hosts_by_unit = {
             str(unit.get("id")): str(unit.get("host"))
@@ -130,6 +137,8 @@ class OperationTimingProgress:
 
     def _entry(self, span: Mapping[str, Any], action: tuple[str, str, str, int], sequence: int) -> dict[str, Any]:
         singular, plural, scope, priority = action
+        if span.get("name") == "materialization.prepare" and self.required_generation:
+            singular = plural = "configuring required native-weight generation"
         attributes = span.get("attributes") if isinstance(span.get("attributes"), Mapping) else {}
         clock = self.clocks.get(str(span.get("clock")), {})
         unit = str(attributes.get("unit") or clock.get("unit") or "")

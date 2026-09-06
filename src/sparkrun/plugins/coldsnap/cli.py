@@ -307,7 +307,7 @@ def build_command():
             snapshot_driver=snapshot_driver,
         )
 
-    @group.command("materialize", help=_recipe_help("Prepare and verify local vLLM or SGLang restore assets."))
+    @group.command("materialize", help=_recipe_help("Prepare and verify restore assets without leaving inference running."))
     @click.option(
         "--artifact",
         metavar="PATH",
@@ -500,6 +500,62 @@ def _begin_operation_timing(sctx, operation, *, dry_run, show_timings):
     return finish
 
 
+def _run_materialization_workload(options, *, plan, sctx, description):
+    """Run one temporary restore and stop only its preallocated launch identity.
+
+    Keep recipe intent/artifact lookup stable, but never reuse a deterministic
+    serving ID: even preparation failures must be safe to clean up. Capture
+    containers are separately owned and removed by the ColdSnap controller.
+    """
+    from dataclasses import replace
+
+    import click
+
+    import sparkrun.api as api
+    from sparkrun.orchestration.job_metadata import generate_cluster_id, generate_placement_token
+
+    token = generate_placement_token()
+    cluster_id = generate_cluster_id(plan.intent_id, token)
+    plan = replace(plan, cluster_id=cluster_id, placement_token=token)
+    options = replace(options, cluster_id_override=cluster_id, detached=True, follow=False)
+    failure = None
+    try:
+        result = api.run(options, plan=plan, sctx=sctx)
+        if getattr(result, "cluster_id", cluster_id) != cluster_id:
+            raise RuntimeError("ColdSnap temporary workload returned an unexpected launch identity")
+        if result.rc:
+            raise RuntimeError("ColdSnap %s failed with exit code %d" % (description, result.rc))
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        click.echo("ColdSnap: stopping temporary materialization workload %s" % cluster_id)
+        try:
+            # stop.cache_dir is the manager's metadata cache, not the model
+            # cache configured by RunOptions.cache_dir.
+            cache_dir = getattr(sctx.config, "cache_dir", None)
+            stopped = api.stop(
+                cluster_id=cluster_id,
+                hosts=plan.host_list,
+                cluster=plan.cluster,
+                cache_dir=str(cache_dir) if cache_dir is not None else None,
+                sctx=sctx,
+            )
+            if not stopped.success:
+                detail = "; ".join(stopped.errors) or "teardown was not confirmed on every host"
+                raise RuntimeError(detail)
+        except Exception as cleanup_error:
+            message = "ColdSnap temporary workload cleanup failed for %s: %s" % (cluster_id, cleanup_error)
+            if failure is None:
+                raise RuntimeError(message) from cleanup_error
+            if isinstance(failure, Exception):
+                raise RuntimeError("%s\n%s" % (failure, message)) from failure
+            # Preserve cancellation/SystemExit semantics while still exposing
+            # incomplete cleanup and the exact ID that may need attention.
+            failure.add_note(message)
+            click.echo(message, err=True)
+
+
 def _materialize(
     recipe,
     cluster,
@@ -578,34 +634,39 @@ def _materialize(
 
         service = ColdSnapService(binary)
         if engine == "sglang":
+
             def verify_sglang(path):
-                verify_options = replace(options, strategy_options={
-                    **base_strategy, "artifact": str(path), "snapshot_driver": selected_driver,
-                    "weights": "native" if resolved_native == "required" else "recovery",
-                    "materialize_native": "off",
-                })
+                verify_options = replace(
+                    options,
+                    strategy_options={
+                        **base_strategy,
+                        "artifact": str(path),
+                        "snapshot_driver": selected_driver,
+                        "weights": "native" if resolved_native == "required" else "recovery",
+                        "materialize_native": "off",
+                    },
+                )
                 verify_plan = api.plan(verify_options, sctx=sctx)
-                result = None
-                try:
-                    result = api.run(verify_options, plan=verify_plan, sctx=sctx)
-                    if result.rc:
-                        raise RuntimeError("ColdSnap SGLang materialized-asset verification failed with exit code %d" % result.rc)
-                finally:
-                    stopped = api.stop(
-                        cluster_id=getattr(result, "cluster_id", None) or verify_plan.cluster_id,
-                        hosts=verify_plan.host_list, cluster=verify_plan.cluster,
-                        cache_dir=options.cache_dir, sctx=sctx,
-                    )
-                    if not stopped.success:
-                        raise RuntimeError("ColdSnap SGLang verification cleanup failed: %s" % "; ".join(stopped.errors))
+                _run_materialization_workload(
+                    verify_options,
+                    plan=verify_plan,
+                    sctx=sctx,
+                    description="SGLang materialized-asset verification",
+                )
 
             service.materialize_sglang(
-                options, plan=plan, sctx=sctx, artifact=artifact, hardware=hardware,
-                native_weights=resolved_native == "required", verify=verify_sglang,
+                options,
+                plan=plan,
+                sctx=sctx,
+                artifact=artifact,
+                hardware=hardware,
+                native_weights=resolved_native == "required",
+                verify=verify_sglang,
             )
-            click.echo("ColdSnap materialization ready: %s." % (
-                "native weights and matching runtime state" if resolved_native == "required" else "target-local runtime state"
-            ))
+            click.echo(
+                "ColdSnap materialization ready: %s."
+                % ("native weights and matching runtime state" if resolved_native == "required" else "target-local runtime state")
+            )
             finish_timing()
             return
         if resolved_native == "required":
@@ -617,9 +678,12 @@ def _materialize(
             }
             native_options = replace(options, strategy_options=native_strategy)
             native_plan = api.plan(native_options, sctx=sctx)
-            native_result = api.run(native_options, plan=native_plan, sctx=sctx)
-            if native_result.rc:
-                raise RuntimeError("ColdSnap native-weight materialization failed with exit code %d" % native_result.rc)
+            _run_materialization_workload(
+                native_options,
+                plan=native_plan,
+                sctx=sctx,
+                description="native-weight materialization",
+            )
 
         overlay = None
         if resolved_residual == "required":
@@ -644,9 +708,12 @@ def _materialize(
                 verify_strategy["artifact"] = str(overlay)
             verify_options = replace(options, strategy_options=verify_strategy)
             verify_plan = api.plan(verify_options, sctx=sctx)
-            verify_result = api.run(verify_options, plan=verify_plan, sctx=sctx)
-            if verify_result.rc:
-                raise RuntimeError("ColdSnap materialized-asset verification failed with exit code %d" % verify_result.rc)
+            _run_materialization_workload(
+                verify_options,
+                plan=verify_plan,
+                sctx=sctx,
+                description="materialized-asset verification",
+            )
 
         ready = []
         if resolved_native == "required":
@@ -654,6 +721,9 @@ def _materialize(
         if resolved_residual == "required":
             ready.append("target-local residuals")
         click.echo("ColdSnap materialization ready: %s." % " and ".join(ready))
+    except (KeyboardInterrupt, SystemExit):
+        finish_timing(STATUS_ERROR)
+        raise
     except Exception as error:
         finish_timing(STATUS_ERROR)
         if isinstance(error, click.ClickException):

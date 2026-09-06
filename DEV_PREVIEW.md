@@ -147,6 +147,20 @@ state, and perform a verification restore. Its duration depends heavily on
 network bandwidth, existing caches, and image distribution. Treat it as a
 preparation step, not as the startup time ColdSnap is intended to improve.
 
+`materialize` is a one-shot preparation command, not a serving launch. It stops
+its temporary native-weight/verification workloads before reporting success;
+native packs, residual overlays, capsules, and reusable caches remain available
+for subsequent launches. Repeating the command also stops its verification
+workload when the assets already exist. Failures and Ctrl+C trigger cleanup;
+an unconfirmed cleanup is reported with the temporary workload's exact ID.
+As with capture/run, use available target hosts: launching preparation work can
+replace an overlapping deployment of the same recipe. Cleanup itself targets
+only the temporary launch, never a recipe-wide stop.
+
+During an ordinary restore, `configuring native-weight caching for restore`
+describes cache-policy setup, not a separate materialize command. Explicitly
+required generation is labelled `configuring required native-weight generation`.
+
 After materialization, run the recipe like any other sparkrun recipe:
 
 ```bash

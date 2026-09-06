@@ -250,6 +250,29 @@ def test_timing_progress_describes_parallel_capsule_pulls_by_node():
     )
 
 
+@pytest.mark.parametrize(
+    "mode,materialize,phrase",
+    [
+        ("native", "required", "configuring native-weight caching for restore"),
+        ("recovery", "off", "configuring native-weight caching for restore"),
+        ("recovery", "async", "configuring native-weight caching for restore"),
+        ("auto", None, "configuring native-weight caching for restore"),
+        ("recovery", "required", "configuring required native-weight generation"),
+    ],
+)
+def test_native_cache_progress_does_not_claim_a_dedicated_materialize(mode, materialize, phrase):
+    request = _request()
+    request["policy"] = {"weights": {"mode": mode, "native": {"materialize": materialize}}}
+    progress = OperationTimingProgress(request)
+    span = {"id": "prepare", "name": "materialization.prepare", "clock": "controller", "attributes": {}}
+    assert progress.accept({"event": "span_start", "span": span}) == ("ColdSnap: " + phrase + " on node-a", True)
+    assert progress.heartbeat_label("restore") == "restore — " + phrase + " on node-a"
+    assert progress.accept({"event": "span_complete", "span": {**span, "duration_seconds": 2.5, "status": "ok"}}) == (
+        "ColdSnap: " + phrase + " on node-a finished (2.5s)",
+        True,
+    )
+
+
 def test_receipt_timing_imports_as_nested_foreign_clock_spans(tmp_path):
     request = _request()
     path = tmp_path / "receipt.json"
