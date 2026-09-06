@@ -32,6 +32,14 @@ Normal model and container authentication still applies. Make sure the target
 hosts can access the recipe's pinned model, runtime image, and capsule
 repository before treating a failure as a ColdSnap problem.
 
+Since plugin 0.1.3, runtime build sources are fetched and commit-verified on the
+control node, then staged on the Spark head. Private sources require repository
+read access and working Git credentials on the control node; no GitHub keys or
+credentials are copied to the targets. For an x64 controller driving ARM64
+Spark nodes, use automatic or delegated transfer mode. See
+[cross-architecture controllers](README.md#cross-architecture-controllers-since-013)
+for platform selection, source access, and verification limits.
+
 ## Install the preview
 
 ```bash
@@ -170,7 +178,7 @@ misses. The TTFT metric begins at Docker
 `State.StartedAt` and ends at the first non-empty streamed token; manager
 preparation and capsule pulls are outside that measurement.
 
-Plugin 0.1.2 pins ColdSnap 0.3.20 in [versions.yaml](versions.yaml), including
+Plugin 0.1.3 pins ColdSnap 0.3.20 in [versions.yaml](versions.yaml), including
 the required `runtime-v1` manager interface introduced in plugin 0.1.1. Historical
 benchmark reports and raw logs are kept outside the public source repository;
 they are not timing guarantees for this release.

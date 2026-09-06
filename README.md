@@ -13,7 +13,13 @@ runtime.
 
 Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
 
-Release 0.1.2 adds explicit SGLang materialization through capture and verified
+Release 0.1.3 fixes Docker platform selection for x64 controllers managing
+ARM64 Spark clusters and stages verified build sources from the controller,
+so Spark nodes do not need GitHub credentials. See
+[cross-architecture controllers](#cross-architecture-controllers-since-013)
+for build modes and source-access requirements. The ColdSnap pin remains 0.3.20.
+
+Release 0.1.2 added explicit SGLang materialization through capture and verified
 restore, using ColdSnap 0.3.20. See the
 [materialization guide](DEV_PREVIEW.md#explicit-sglang-materialization-since-012)
 for native and recovery-only preparation; ordinary recovery restores do not
@@ -168,7 +174,7 @@ executables before activating the cache generation.
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.2 pins ColdSnap 0.3.20. The provider
+Plugin 0.1.3 pins ColdSnap 0.3.20. The provider
 advertises `runtime-v1` and delegates typed image/workload operations to
 `DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine
@@ -203,11 +209,11 @@ also set `COLDSNAP_TEST_DOCKER_IMAGE` to a locally cached shell image (for examp
 These tests create only uniquely named local test resources, clean them up,
 and do not request GPUs or publish images.
 
-## Cross-architecture controllers (development)
+## Cross-architecture controllers (since 0.1.3)
 
-The development retrieval fixes below are not included in released plugin
-0.1.2. Linux x64 control nodes can manage ARM64 Spark clusters; the two machines
-do not need the same CPU architecture.
+Plugin 0.1.3 includes the retrieval fixes below. Linux x64 control nodes can
+manage ARM64 Spark clusters; the two machines do not need the same CPU
+architecture.
 
 | Resource | Platform used |
 | --- | --- |
@@ -235,6 +241,12 @@ before checkout or build. Public NCCL source fallback remains on the build host.
 For Sparkrun 0.3.8, select its git-only `develop-next` branch with
 `SPARKRUN_BRANCH=develop-next` when sourcing `dev.sh`. Sparkrun 0.3.7 is the
 latest published host version; both host versions are regression-tested.
+
+Retrieval verification includes real descriptor extraction with an overridden
+Docker default platform and controller-to-Spark source staging, plus regression
+tests against both host versions. These checks were run from an ARM64 control
+node; a full x64-to-Spark materialization and GPU inference cycle has not been
+qualified for this release.
 
 ## Licensing
 
