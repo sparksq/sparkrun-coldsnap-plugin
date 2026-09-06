@@ -292,6 +292,11 @@ def test_install_controller_tool_from_oci_verifies_and_caches_bundle(tmp_path, m
         "resolved": "scitrera/coldsnap-binaries@sha256:" + "b" * 64,
     }
     assert [arguments[1] for arguments in calls] == ["pull", "image", "create", "cp", "rm"]
+    created = next(arguments for arguments in calls if arguments[1] == "create")
+    assert created[-1] == "scitrera/coldsnap-binaries@sha256:" + "b" * 64
+    for arguments in calls:
+        if arguments[1] in {"pull", "create"}:
+            assert arguments[arguments.index("--platform") + 1] == "linux/amd64"
 
 
 def test_install_controller_tool_from_oci_rejects_wrong_commit(tmp_path, monkeypatch):
@@ -389,6 +394,7 @@ def test_temporary_source_build_uses_pinned_dockerized_go_toolchain(tmp_path, mo
 
     command = seen[0]
     assert command[:3] == ["/usr/bin/docker", "run", "--rm"]
+    assert command[command.index("--platform") + 1] == "linux/amd64"
     assert go_version == GO_VERSION
     assert builder_image == GO_BUILDER_IMAGE
     assert GO_BUILDER_IMAGE in command

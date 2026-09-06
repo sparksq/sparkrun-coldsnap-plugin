@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 import json
 import subprocess
 import time
@@ -26,6 +27,8 @@ from sparkrun.plugins.coldsnap.tool import DEFAULT_CONTROLLER_COMMIT, DEFAULT_CO
 
 PINNED_IMAGE = "registry.example/vllm@sha256:" + "a" * 64
 _DETECT_SNAPSHOT_DRIVER = ColdSnapBuilder._detect_snapshot_driver
+_DETECT_DOCKER_PLATFORM = ColdSnapBuilder._detect_docker_platform
+_PREPARED_SOURCES = ColdSnapBuilder._prepared_sources
 
 
 def _recipe(**builder_config):
@@ -39,6 +42,11 @@ def _result(*, success=True, stdout="", stderr=""):
 @pytest.fixture(autouse=True)
 def _stable_snapshot_driver(monkeypatch):
     monkeypatch.setattr(ColdSnapBuilder, "_detect_snapshot_driver", lambda *_args, **_kwargs: "n610")
+    monkeypatch.setattr(ColdSnapBuilder, "_detect_docker_platform", lambda *_args, **_kwargs: "linux/arm64")
+    @contextmanager
+    def sources(*_args, **_kwargs):
+        yield "/tmp/test-coldsnap-sources"
+    monkeypatch.setattr(ColdSnapBuilder, "_prepared_sources", sources)
 
 
 def test_coldsnap_builder_is_registered_by_plugin_loader():
@@ -52,16 +60,18 @@ def test_coldsnap_builder_is_registered_by_plugin_loader():
 def test_build_plan_requires_digest_pinned_input_and_is_content_addressed():
     settings = _resolve_settings(_recipe(), None)
     with pytest.raises(ValueError, match="digest"):
-        _build_plan("registry.example/vllm:latest", settings, "121")
+        _build_plan("registry.example/vllm:latest", settings, "121", docker_platform="linux/arm64")
 
-    first = _build_plan(PINNED_IMAGE, settings, "121")
-    same = _build_plan(PINNED_IMAGE, settings, "121")
-    other_arch = _build_plan(PINNED_IMAGE, settings, "90")
-    other_driver = _build_plan(PINNED_IMAGE, settings, "121", "n580")
+    first = _build_plan(PINNED_IMAGE, settings, "121", docker_platform="linux/arm64")
+    same = _build_plan(PINNED_IMAGE, settings, "121", docker_platform="linux/arm64")
+    other_arch = _build_plan(PINNED_IMAGE, settings, "90", docker_platform="linux/arm64")
+    other_driver = _build_plan(PINNED_IMAGE, settings, "121", "n580", docker_platform="linux/arm64")
+    other_platform = _build_plan(PINNED_IMAGE, settings, "121", docker_platform="linux/amd64")
     assert first == same
     assert first.output_image.startswith("sparkrun/coldsnap-vllm:")
     assert first.output_image != other_arch.output_image
     assert first.output_image != other_driver.output_image
+    assert first.output_image != other_platform.output_image
 
 
 def test_builder_settings_accept_arch_and_source_overrides():
@@ -101,9 +111,9 @@ def test_builder_sources_use_public_https_where_available():
     private = {source.name: source.url for source in settings.sources}
 
     assert private == {
-        "coldsnap": "git@github.com:sparksq/coldsnap.git",
+        "coldsnap": "https://github.com/sparksq/coldsnap.git",
         "go_criu": "https://github.com/sparksq/go-criu.git",
-        "cuda_checkpoint": "git@github.com:sparksq/cuda-checkpoint.git",
+        "cuda_checkpoint": "https://github.com/sparksq/cuda-checkpoint.git",
     }
     assert settings.sources[0].ref == "refs/tags/v%s" % DEFAULT_CONTROLLER_VERSION
     assert settings.sources[0].revision == DEFAULT_CONTROLLER_COMMIT
@@ -115,7 +125,7 @@ def test_builder_sources_use_public_https_where_available():
 
 def test_rendered_build_uses_canonical_coldsnap_dockerfiles_and_pins():
     settings = _resolve_settings(_recipe(), None)
-    plan = _build_plan(PINNED_IMAGE, settings, "121")
+    plan = _build_plan(PINNED_IMAGE, settings, "121", docker_platform="linux/arm64")
     script = render_build_script(plan)
 
     assert "deploy/nccl/Dockerfile.payload" in script
@@ -159,7 +169,7 @@ def test_rendered_build_uses_canonical_coldsnap_dockerfiles_and_pins():
 
 def test_sglang_build_plan_uses_engine_specific_runtime_for_both_drivers():
     settings = _resolve_settings(_recipe(), None, "sglang")
-    plan = _build_plan(PINNED_IMAGE, settings, "121", "n610", "sglang")
+    plan = _build_plan(PINNED_IMAGE, settings, "121", "n610", "sglang", docker_platform="linux/arm64")
     script = render_build_script(plan)
 
     assert plan.output_image.startswith("sparkrun/coldsnap-sglang:")
@@ -169,14 +179,14 @@ def test_sglang_build_plan_uses_engine_specific_runtime_for_both_drivers():
     assert 'group="sglang.srt.plugins"' in script
     subprocess.run(("bash", "-n"), input=script, text=True, check=True)
 
-    n580 = _build_plan(PINNED_IMAGE, settings, "121", "n580", "sglang")
+    n580 = _build_plan(PINNED_IMAGE, settings, "121", "n580", "sglang", docker_platform="linux/arm64")
     assert n580.snapshot_driver == "n580"
     assert n580.output_image != plan.output_image
 
 
 def test_rendered_selector_uses_latest_qualified_same_major_even_with_exact_available(tmp_path):
     settings = _resolve_settings(_recipe(), None)
-    script = render_build_script(_build_plan(PINNED_IMAGE, settings, "121"))
+    script = render_build_script(_build_plan(PINNED_IMAGE, settings, "121", docker_platform="linux/arm64"))
     selector = script.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
     releases = tmp_path / "releases"
     releases.mkdir()

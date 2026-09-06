@@ -80,13 +80,16 @@ def stage_oci_artifact(
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     logger.log(PROGRESS, "ColdSnap: pulling artifact descriptor %s", reference)
     with progress_heartbeat(logger, "ColdSnap: artifact descriptor pull"):
-        _checked(run_command, [docker, "pull", raw])
-    resolved = _resolved_reference(raw, docker=docker, run_command=run_command)
+        image, image_platform = _descriptor_image(raw, docker=docker, run_command=run_command)
+        _checked(run_command, [docker, "pull", "--platform", image_platform, image])
+    resolved = _resolved_reference(image, docker=docker, run_command=run_command)
     name = "sparkrun-coldsnap-artifact-" + uuid.uuid4().hex[:16]
     temporary_directory = Path(tempfile.mkdtemp(prefix=".coldsnap-artifact-", dir=destination.parent))
     temporary = temporary_directory / "artifact.json"
     try:
-        _checked(run_command, [docker, "create", "--name", name, raw, _CONTAINER_ARTIFACT])
+        # Descriptor images contain data only: create/cp never executes their
+        # entrypoint and needs no QEMU even on a foreign-architecture controller.
+        _checked(run_command, [docker, "create", "--platform", image_platform, "--name", name, image, _CONTAINER_ARTIFACT])
         _checked(run_command, [docker, "cp", name + ":" + _CONTAINER_ARTIFACT, str(temporary)])
         _read_committed_artifact(temporary, snapshot_driver=snapshot_driver)
         os.chmod(temporary, 0o600)
@@ -129,7 +132,8 @@ def publish_oci_artifact(
             encoding="utf-8",
         )
         with progress_heartbeat(logger, "ColdSnap: artifact descriptor publish"):
-            _checked(run_command, [docker, "build", "--quiet", "--tag", raw, str(context)])
+            # FROM scratch + COPY has no architecture-dependent execution.
+            _checked(run_command, [docker, "build", "--platform", "linux/amd64", "--quiet", "--tag", raw, str(context)])
             _checked(run_command, [docker, "push", raw])
     resolved = _resolved_reference(raw, docker=docker, run_command=run_command)
     logger.log(PROGRESS, "ColdSnap artifact descriptor published: %s", resolved)
@@ -331,7 +335,48 @@ def _http(request: Request, *, opener) -> tuple[int, Any, bytes]:
 def _raw_reference(reference: str) -> str:
     if not reference.startswith("oci://") or len(reference) == len("oci://"):
         raise ValueError("ColdSnap artifact reference must use oci://")
-    return reference.removeprefix("oci://")
+    raw = reference.removeprefix("oci://")
+    if raw.startswith("-") or any(character.isspace() or character == "\x00" for character in raw):
+        raise ValueError("ColdSnap artifact reference is invalid")
+    return raw
+
+
+def _descriptor_image(raw: str, *, docker: str, run_command: RunCommand) -> tuple[str, str]:
+    """Resolve data-only OCI content independently of the controller CPU."""
+    result = _checked(run_command, [docker, "manifest", "inspect", "--verbose", raw], capture_output=True)
+    try:
+        inspected = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Docker returned an invalid ColdSnap descriptor manifest") from error
+    entries = inspected if isinstance(inspected, list) else [inspected]
+    candidates = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        descriptor = entry.get("Descriptor", {})
+        if not isinstance(descriptor, dict):
+            continue
+        platform = descriptor.get("platform", entry.get("Platform", {}))
+        digest = descriptor.get("digest", entry.get("Digest", ""))
+        if not isinstance(platform, dict) or platform.get("os") != "linux":
+            continue
+        arch, variant = platform.get("architecture"), platform.get("variant", "")
+        if arch not in {"amd64", "arm64"} or not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            continue
+        if not isinstance(variant, str) or (variant and not re.fullmatch(r"[a-zA-Z0-9_.-]+", variant)):
+            continue
+        candidates.append(("linux/" + arch + ("/" + variant if variant else ""), digest))
+    if not candidates:
+        raise RuntimeError("ColdSnap descriptor manifest has no supported Linux image (amd64 or arm64)")
+    if "@" in raw and not isinstance(inspected, list) and candidates[0][1] != raw.rpartition("@")[2]:
+        raise RuntimeError("ColdSnap descriptor manifest does not match its requested digest")
+    # Metadata is platform-neutral. Prefer amd64 deterministically when a list
+    # provides both, while remaining compatible with historical arm64 images.
+    image_platform, digest = sorted(candidates)[0]
+    repository = raw.split("@", 1)[0]
+    if ":" in repository.rsplit("/", 1)[-1]:
+        repository = repository.rsplit(":", 1)[0]
+    return repository + "@" + digest, image_platform
 
 
 def _resolved_reference(raw: str, *, docker: str, run_command: RunCommand) -> str:
@@ -346,12 +391,21 @@ def _resolved_reference(raw: str, *, docker: str, run_command: RunCommand) -> st
         raise RuntimeError("Docker returned an invalid ColdSnap artifact digest inventory") from error
     if not isinstance(digests, list) or not digests or not all(isinstance(item, str) for item in digests):
         raise RuntimeError("ColdSnap artifact image has no immutable repository digest")
+    repository = raw.split("@", 1)[0]
+    if ":" in repository.rsplit("/", 1)[-1]:
+        repository = repository.rsplit(":", 1)[0]
+    def canonical(value):
+        return value.removeprefix("docker.io/").removeprefix("index.docker.io/")
+    digests = [item for item in digests if canonical(item.rpartition("@")[0]) == canonical(repository)
+               and re.fullmatch(r"sha256:[0-9a-f]{64}", item.rpartition("@")[2])]
     if "@" in raw:
         expected = raw.rpartition("@")[2]
         matching = [item for item in digests if item.endswith("@" + expected)]
         if not matching:
             raise RuntimeError("pulled ColdSnap artifact does not match its requested digest")
         return "oci://" + matching[0]
+    if not digests:
+        raise RuntimeError("ColdSnap artifact image has no digest for the requested repository")
     return "oci://" + digests[0]
 
 
@@ -387,7 +441,8 @@ def _validate_committed_artifact(artifact: Any, *, snapshot_driver: str | None =
         seen_units.add(unit)
         reference = image.get("reference")
         digest = image.get("digest")
-        if not isinstance(reference, str) or not isinstance(digest, str) or not reference.endswith(digest):
+        if (not isinstance(reference, str) or not isinstance(digest, str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not reference.endswith("@" + digest)):
             raise RuntimeError("ColdSnap OCI descriptor capsules are not digest-pinned")
 
 

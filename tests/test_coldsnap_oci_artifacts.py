@@ -10,10 +10,15 @@ import shutil
 from types import SimpleNamespace
 from urllib.request import Request
 
+import pytest
+
 from sparkrun.core.recipe import Recipe
 from sparkrun.plugins.coldsnap import register
 from sparkrun.plugins.coldsnap.oci_artifacts import (
     _split_tagged_reference,
+    _descriptor_image,
+    _resolved_reference,
+    _validate_committed_artifact,
     configured_artifact_reference,
     default_artifact_publish_reference,
     delete_oci_tag,
@@ -88,7 +93,9 @@ def test_stage_oci_artifact_verifies_and_atomically_installs_descriptor(tmp_path
     def run(arguments, **_kwargs):
         calls.append(arguments)
         stdout = ""
-        if arguments[1:3] == ["image", "inspect"]:
+        if arguments[1:3] == ["manifest", "inspect"]:
+            stdout = json.dumps({"Descriptor": {"digest": _DIGEST, "platform": {"os": "linux", "architecture": "arm64"}}})
+        elif arguments[1:3] == ["image", "inspect"]:
             stdout = json.dumps(["docker.io/example/capsules@" + _DIGEST])
         elif arguments[1] == "cp":
             shutil.copyfile(source, arguments[-1])
@@ -105,6 +112,10 @@ def test_stage_oci_artifact_verifies_and_atomically_installs_descriptor(tmp_path
     assert any(call[1] == "pull" for call in calls)
     assert any(call[1] == "cp" for call in calls)
     assert any(call[1:3] == ["rm", "-f"] for call in calls)
+    for call in calls:
+        if call[1] in {"pull", "create"}:
+            assert call[call.index("--platform") + 1] == "linux/arm64"
+            assert "docker.io/example/capsules@" + _DIGEST in call
 
 
 def test_publish_oci_artifact_returns_immutable_reference(tmp_path):
@@ -127,6 +138,79 @@ def test_publish_oci_artifact_returns_immutable_reference(tmp_path):
     assert resolved == "oci://docker.io/example/capsules@" + _DIGEST
     assert any(call[1] == "build" for call in calls)
     assert any(call[1] == "push" for call in calls)
+    build = next(call for call in calls if call[1] == "build")
+    assert build[build.index("--platform") + 1] == "linux/amd64"
+
+
+@pytest.mark.parametrize(("reference", "digest"), [("example/capsule:latest", "latest"), ("example/capsule:" + _DIGEST, _DIGEST)])
+def test_descriptor_rejects_inventory_that_only_looks_digest_pinned(reference, digest):
+    artifact = _artifact()
+    artifact["capsule"]["images"][0].update(reference=reference, digest=digest)
+    with pytest.raises(RuntimeError, match="not digest-pinned"):
+        _validate_committed_artifact(artifact)
+
+
+@pytest.mark.parametrize("arch", ["arm64", "amd64"])
+def test_data_only_descriptor_is_extracted_by_digest_with_an_explicit_foreign_platform(tmp_path, monkeypatch, arch):
+    monkeypatch.setenv("DOCKER_DEFAULT_PLATFORM", "linux/amd64" if arch == "arm64" else "linux/arm64")
+    raw = "docker.io/example/capsules:mutable"
+    pinned = raw.rsplit(":", 1)[0] + "@" + _DIGEST
+    calls = []
+    def run(arguments, **_kwargs):
+        calls.append(arguments)
+        output = ""
+        if arguments[1:3] == ["manifest", "inspect"]:
+            assert arguments[-1] == raw
+            output = json.dumps({"Descriptor": {"digest": _DIGEST, "platform": {"os": "linux", "architecture": arch}}})
+        elif arguments[1] in {"pull", "create"}:
+            assert pinned in arguments and raw not in arguments
+            assert arguments[arguments.index("--platform") + 1] == "linux/" + arch
+        elif arguments[1:3] == ["image", "inspect"]:
+            output = json.dumps([pinned])
+        elif arguments[1] == "cp":
+            from pathlib import Path
+            Path(arguments[-1]).write_text(json.dumps(_artifact()))
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+    stage_oci_artifact("oci://" + raw, tmp_path / "artifact.json", run_command=run)
+    assert not any(command[1] in {"run", "start"} for command in calls)
+
+
+def test_descriptor_manifest_list_skips_attestations_and_selects_a_pinned_data_image():
+    entries = [
+        {"Descriptor": {"digest": "sha256:" + "b" * 64, "platform": {"os": "linux", "architecture": "arm64"}}},
+        {"Descriptor": {"digest": "sha256:" + "c" * 64, "platform": {"os": "unknown", "architecture": "unknown"}}},
+        {"Descriptor": {"digest": _DIGEST, "platform": {"os": "linux", "architecture": "amd64"}}},
+    ]
+    image, platform = _descriptor_image(
+        "registry.example:5000/example/capsules:tag", docker="docker",
+        run_command=lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(entries)),
+    )
+    assert image == "registry.example:5000/example/capsules@" + _DIGEST
+    assert platform == "linux/amd64"
+
+
+@pytest.mark.parametrize("manifest", [{}, [], {"Descriptor": {"digest": _DIGEST, "platform": {"os": "unknown"}}}])
+def test_descriptor_rejects_a_manifest_without_a_real_supported_image(manifest):
+    with pytest.raises(RuntimeError, match="no supported Linux image"):
+        _descriptor_image("example/capsules:tag", docker="docker", run_command=lambda *_a, **_k: SimpleNamespace(
+            returncode=0, stdout=json.dumps(manifest),
+        ))
+
+
+def test_descriptor_cannot_substitute_a_different_requested_single_manifest_digest():
+    manifest = {"Descriptor": {"digest": _DIGEST, "platform": {"os": "linux", "architecture": "arm64"}}}
+    with pytest.raises(RuntimeError, match="does not match its requested digest"):
+        _descriptor_image("example/capsules@sha256:" + "b" * 64, docker="docker", run_command=lambda *_a, **_k: SimpleNamespace(
+            returncode=0, stdout=json.dumps(manifest),
+        ))
+
+
+def test_resolved_descriptor_uses_the_requested_repository_not_an_unrelated_alias():
+    inventory = ["other.example/capsules@" + _DIGEST, "example/capsules@sha256:" + "b" * 64]
+    resolved = _resolved_reference("docker.io/example/capsules:tag", docker="docker", run_command=lambda *_a, **_k: SimpleNamespace(
+        returncode=0, stdout=json.dumps(inventory),
+    ))
+    assert resolved == "oci://example/capsules@sha256:" + "b" * 64
 
 
 def test_oci_deletion_requires_an_exact_tag_and_normalizes_docker_hub():

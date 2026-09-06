@@ -10,7 +10,7 @@ This is deliberately homed with the ColdSnap integration rather than under
 item, CLI, execution strategy, and builder as one capability.
 
 The builder runs on the controller for ordinary transfer modes or on the
-delegated head. It fetches immutable source revisions into a persistent cache,
+delegated head. It stages verified sources from the controller without forwarding credentials,
 observes the base image's NCCL identity, selects the newest capability-admitted
 same-major provider, reuses its published multiarch payload when available,
 and invokes ColdSnap's canonical engine Dockerfile against the input image.
@@ -20,22 +20,27 @@ Missing payload platforms fall back to a target-architecture source build.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
 import json
 import logging
+from pathlib import Path
 import re
+from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
 from sparkrun.builders.base import BuilderPlugin
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
 from sparkrun.orchestration.primitives import run_script_on_host, run_script_on_host_streaming
+from sparkrun.orchestration.ssh import run_rsync, should_run_locally
+from sparkrun.plugins.coldsnap.git_sources import clone_pinned_source
 from sparkrun.plugins.coldsnap.tool import DEFAULT_CONTROLLER_COMMIT, DEFAULT_CONTROLLER_VERSION
 from sparkrun.utils.shell import quote
 
 
 logger = logging.getLogger(__name__)
 
-_BUILDER_SCHEMA = "coldsnap-inference-provider-v8"
+_BUILDER_SCHEMA = "coldsnap-inference-provider-v9"
 _DEFAULT_CRIU_IMAGE = "ghcr.io/sparksq/criu@sha256:2ff53a61af48e7e676bd4d64747394ca7c7622840ef0c740e719e6ecadb0d07c"
 _COLDSNAP_RUNTIME_LABEL = "io.sparksq.coldsnap.runtime"
 _COLDSNAP_DRIVERS_LABEL = "io.sparksq.coldsnap.snapshot-drivers"
@@ -60,7 +65,7 @@ class GitSource:
 _DEFAULT_SOURCES = (
     GitSource(
         "coldsnap",
-        "git@github.com:sparksq/coldsnap.git",
+        "https://github.com/sparksq/coldsnap.git",
         "refs/tags/v%s" % DEFAULT_CONTROLLER_VERSION,
         DEFAULT_CONTROLLER_COMMIT,
     ),
@@ -72,7 +77,7 @@ _DEFAULT_SOURCES = (
     ),
     GitSource(
         "cuda_checkpoint",
-        "git@github.com:sparksq/cuda-checkpoint.git",
+        "https://github.com/sparksq/cuda-checkpoint.git",
         "00d5cce84c628088d6caa203fc4af40c1538b6f7",
         "00d5cce84c628088d6caa203fc4af40c1538b6f7",
     ),
@@ -105,6 +110,7 @@ class ColdSnapBuildPlan:
     criu_image: str
     snapshot_driver: str
     sources: tuple[GitSource, ...]
+    docker_platform: str
 
 
 def _string_setting(values: Mapping[str, Any], name: str, default: str) -> str:
@@ -198,6 +204,8 @@ def _build_plan(
     cuda_arch: str,
     snapshot_driver: str = "n610",
     engine: str = "vllm",
+    *,
+    docker_platform: str,
 ) -> ColdSnapBuildPlan:
     if not _PINNED_IMAGE.fullmatch(image):
         raise ValueError("builder: coldsnap requires a digest-pinned container: name@sha256:<64 lowercase hex characters>")
@@ -207,6 +215,8 @@ def _build_plan(
         raise ValueError("ColdSnap builder snapshot driver must be n580 or n610")
     if engine not in {"vllm", "sglang"}:
         raise ValueError("ColdSnap builder engine must be vllm or sglang")
+    if docker_platform not in {"linux/arm64", "linux/amd64", "linux/target"}:
+        raise ValueError("ColdSnap builder requires a supported Linux Docker platform")
     identity = {
         "schema": _BUILDER_SCHEMA,
         "engine": engine,
@@ -215,6 +225,7 @@ def _build_plan(
         "nccl_policy": settings.nccl_policy,
         "criu_image": settings.criu_image,
         "snapshot_driver": snapshot_driver,
+        "docker_platform": docker_platform,
         "sources": [source.__dict__ for source in settings.sources],
     }
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -232,13 +243,14 @@ def _build_plan(
         criu_image=settings.criu_image,
         snapshot_driver=snapshot_driver,
         sources=settings.sources,
+        docker_platform=docker_platform,
     )
 
 
 def _dry_run_plan(image: str, settings: BuildSettings, engine: str = "vllm") -> ColdSnapBuildPlan:
     # Dry runs cannot query a GPU. Keep the output stable and visibly distinct
     # from a real architecture-specific build.
-    return _build_plan(image, settings, settings.cuda_arch or "000", "n610", engine)
+    return _build_plan(image, settings, settings.cuda_arch or "000", "n610", engine, docker_platform="linux/target")
 
 
 def _source_variables(sources: tuple[GitSource, ...]) -> str:
@@ -255,12 +267,13 @@ def _source_variables(sources: tuple[GitSource, ...]) -> str:
     return "\n".join(lines)
 
 
-def render_build_script(plan: ColdSnapBuildPlan) -> str:
+def render_build_script(plan: ColdSnapBuildPlan, *, source_root: str = "") -> str:
     """Render the delegated/local BuildKit conversion script."""
     return """#!/usr/bin/env bash
 set -euo pipefail
 
 COLDSNAP_DOCKER=%(docker)s
+COLDSNAP_DOCKER_PLATFORM=%(docker_platform)s
 COLDSNAP_ENGINE=%(engine)s
 COLDSNAP_INPUT_IMAGE=%(input)s
 COLDSNAP_OUTPUT_IMAGE=%(output)s
@@ -273,6 +286,7 @@ COLDSNAP_CRIU_IMAGE=%(criu_image)s
 COLDSNAP_SNAPSHOT_DRIVER=%(snapshot_driver)s
 COLDSNAP_CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/sparkrun/coldsnap-builder"
 COLDSNAP_SOURCE_ROOT="$COLDSNAP_CACHE_ROOT/sources"
+%(prepared_sources)s
 COLDSNAP_BUILD_ROOT="$COLDSNAP_CACHE_ROOT/builds/$COLDSNAP_FINGERPRINT"
 %(source_variables)s
 
@@ -302,11 +316,15 @@ sync_source() {
     *) echo "[coldsnap-builder] refusing unsafe source path: $coldsnap_source_destination" >&2; exit 1 ;;
   esac
   echo "[coldsnap-builder] fetching $coldsnap_source_name from $coldsnap_source_url ($coldsnap_source_ref)" >&2
-  git init -q "$coldsnap_source_destination"
-  git -C "$coldsnap_source_destination" remote add origin "$coldsnap_source_url"
-  git -C "$coldsnap_source_destination" fetch -q --depth=1 origin "$coldsnap_source_ref"
-  git -C "$coldsnap_source_destination" checkout -q --detach FETCH_HEAD
-  coldsnap_source_actual="$(git -C "$coldsnap_source_destination" rev-parse HEAD)"
+  # Bash disables errexit inside command substitution: check every operation.
+  git init -q "$coldsnap_source_destination" || return 1
+  git -C "$coldsnap_source_destination" remote add origin "$coldsnap_source_url" || return 1
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$coldsnap_source_destination" fetch -q --depth=1 origin "$coldsnap_source_ref"; then
+    echo "[coldsnap-builder] failed to fetch pinned $coldsnap_source_name source; build stopped" >&2
+    return 1
+  fi
+  git -C "$coldsnap_source_destination" checkout -q --detach FETCH_HEAD || return 1
+  coldsnap_source_actual="$(git -C "$coldsnap_source_destination" rev-parse --verify 'HEAD^{commit}')" || return 1
   if [ "$coldsnap_source_actual" != "$coldsnap_source_revision" ]; then
     echo "[coldsnap-builder] $coldsnap_source_name resolved to $coldsnap_source_actual, expected $coldsnap_source_revision" >&2
     exit 1
@@ -317,7 +335,7 @@ sync_source() {
 COLDSNAP_SOURCE_COLDSNAP_DIR="$(sync_source coldsnap "$COLDSNAP_SOURCE_COLDSNAP_URL" "$COLDSNAP_SOURCE_COLDSNAP_REF" "$COLDSNAP_SOURCE_COLDSNAP_REVISION")"
 COLDSNAP_SOURCE_GO_CRIU_DIR="$(sync_source go-criu "$COLDSNAP_SOURCE_GO_CRIU_URL" "$COLDSNAP_SOURCE_GO_CRIU_REF" "$COLDSNAP_SOURCE_GO_CRIU_REVISION")"
 COLDSNAP_SOURCE_CUDA_CHECKPOINT_DIR="$(sync_source cuda-checkpoint "$COLDSNAP_SOURCE_CUDA_CHECKPOINT_URL" "$COLDSNAP_SOURCE_CUDA_CHECKPOINT_REF" "$COLDSNAP_SOURCE_CUDA_CHECKPOINT_REVISION")"
-COLDSNAP_BASE_NCCL_RELEASE="$("$COLDSNAP_DOCKER" run --rm --gpus all --entrypoint python3 "$COLDSNAP_INPUT_IMAGE" -c \
+COLDSNAP_BASE_NCCL_RELEASE="$("$COLDSNAP_DOCKER" run --rm --platform "$COLDSNAP_DOCKER_PLATFORM" --gpus all --entrypoint python3 "$COLDSNAP_INPUT_IMAGE" -c \
   'import ctypes; v=ctypes.c_int(); n=ctypes.CDLL("libnccl.so.2"); r=n.ncclGetVersion(ctypes.byref(v)); assert r == 0 and v.value > 0; print(f"{v.value // 10000}.{(v.value // 100) %% 100}.{v.value %% 100}")')"
 COLDSNAP_NCCL_SELECTION_FILE="$COLDSNAP_BUILD_ROOT/nccl-selection.txt"
 python3 - "$COLDSNAP_SOURCE_COLDSNAP_DIR/native/nccl/releases" "$COLDSNAP_BASE_NCCL_RELEASE" "$COLDSNAP_NCCL_POLICY" >"$COLDSNAP_NCCL_SELECTION_FILE" <<'PY'
@@ -414,14 +432,10 @@ COLDSNAP_NCCL_STRIP_OUTPUTS="$(python3 -c 'import json,sys; v=json.load(open(sys
 COLDSNAP_NCCL_PAYLOAD_IMAGE=""
 COLDSNAP_NCCL_PAYLOAD_FALLBACK_REASON="published NCCL payload unavailable"
 COLDSNAP_ALLOW_LOCAL_NCCL_PAYLOAD=0
-case "$(uname -m)" in
-  aarch64|arm64) COLDSNAP_NCCL_HOST_ARCH=arm64 ;;
-  x86_64|amd64) COLDSNAP_NCCL_HOST_ARCH=amd64 ;;
-  *) COLDSNAP_NCCL_HOST_ARCH="$(uname -m)" ;;
-esac
+COLDSNAP_NCCL_HOST_ARCH="${COLDSNAP_DOCKER_PLATFORM#linux/}"
 
 echo "[coldsnap-builder] resolving published NCCL payload $COLDSNAP_NCCL_PUBLISHED_PAYLOAD" >&2
-if "$COLDSNAP_DOCKER" pull "$COLDSNAP_NCCL_PUBLISHED_PAYLOAD"; then
+if "$COLDSNAP_DOCKER" pull --platform "$COLDSNAP_DOCKER_PLATFORM" "$COLDSNAP_NCCL_PUBLISHED_PAYLOAD"; then
   COLDSNAP_NCCL_PAYLOAD_ARCH="$("$COLDSNAP_DOCKER" image inspect \
     --format '{{.Architecture}}' "$COLDSNAP_NCCL_PUBLISHED_PAYLOAD" 2>/dev/null || true)"
   COLDSNAP_NCCL_PAYLOAD_COMPATIBLE=0
@@ -461,6 +475,7 @@ if [ -z "$COLDSNAP_NCCL_PAYLOAD_IMAGE" ]; then
   COLDSNAP_SOURCE_NCCL_DIR="$(sync_source nccl "$COLDSNAP_NCCL_SOURCE_URL" "refs/tags/$COLDSNAP_NCCL_SOURCE_TAG" "$COLDSNAP_NCCL_SOURCE_REVISION")"
   if ! "$COLDSNAP_DOCKER" image inspect "$COLDSNAP_NCCL_LOCAL_PAYLOAD" >/dev/null 2>&1; then
     DOCKER_BUILDKIT=1 "$COLDSNAP_DOCKER" build \
+      --platform "$COLDSNAP_DOCKER_PLATFORM" \
       --pull=false \
       --file "$COLDSNAP_SOURCE_COLDSNAP_DIR/deploy/nccl/Dockerfile.payload" \
       --target provider_payload_oci \
@@ -485,6 +500,7 @@ fi
 if ! "$COLDSNAP_DOCKER" image inspect "$COLDSNAP_NCCL_IMAGE" >/dev/null 2>&1; then
   echo "[coldsnap-builder] assembling qualified NCCL provider for the inference image"
   DOCKER_BUILDKIT=1 "$COLDSNAP_DOCKER" build \
+    --platform "$COLDSNAP_DOCKER_PLATFORM" \
     --pull=false \
     --file "$COLDSNAP_SOURCE_COLDSNAP_DIR/deploy/nccl/Dockerfile.provider" \
     --build-arg "TARGET_IMAGE=$COLDSNAP_INPUT_IMAGE" \
@@ -498,6 +514,7 @@ fi
 
 echo "[coldsnap-builder] deriving $COLDSNAP_OUTPUT_IMAGE from $COLDSNAP_INPUT_IMAGE"
 DOCKER_BUILDKIT=1 "$COLDSNAP_DOCKER" build \
+  --platform "$COLDSNAP_DOCKER_PLATFORM" \
   --pull=false \
   --file "$COLDSNAP_SOURCE_COLDSNAP_DIR/deploy/%(engine_path)s/Dockerfile" \
   --build-arg "%(base_image_arg)s=$COLDSNAP_INPUT_IMAGE" \
@@ -520,11 +537,13 @@ if [ "$COLDSNAP_RUNTIME_LABEL" != %(runtime_label)s ]; then
   echo "[coldsnap-builder] derived image has incompatible ColdSnap runtime label: $COLDSNAP_RUNTIME_LABEL" >&2
   exit 1
 fi
-"$COLDSNAP_DOCKER" run --rm --entrypoint python3 "$COLDSNAP_OUTPUT_IMAGE" -c \
+"$COLDSNAP_DOCKER" run --rm --platform "$COLDSNAP_DOCKER_PLATFORM" --entrypoint python3 "$COLDSNAP_OUTPUT_IMAGE" -c \
   %(plugin_validation)s
 echo "[coldsnap-builder] ready: $COLDSNAP_OUTPUT_IMAGE"
 """ % {
         "docker": quote(plan.docker_command),
+        "docker_platform": quote(plan.docker_platform),
+        "prepared_sources": "COLDSNAP_SOURCE_ROOT=%s" % quote(source_root) if source_root else "",
         "engine": quote(plan.engine),
         "engine_path": plan.engine,
         "base_image_arg": "SGLANG_IMAGE" if plan.engine == "sglang" else "VLLM_IMAGE",
@@ -659,17 +678,19 @@ class ColdSnapBuilder(BuilderPlugin):
         host: str,
         settings: BuildSettings,
         ssh_kwargs: dict | None,
+        docker_platform: str,
     ) -> None:
         docker = quote(settings.docker_command)
         image_value = quote(image)
         script = """set -e
-if %(docker)s image inspect %(image)s >/dev/null 2>&1; then
+if [ "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s 2>/dev/null || true)" = %(platform)s ]; then
   echo "[coldsnap-builder] input image already present: %(image)s"
 else
   echo "[coldsnap-builder] pulling input image: %(image)s"
-  %(docker)s pull %(image)s
+  %(docker)s pull --platform %(platform)s %(image)s
 fi
-""" % {"docker": docker, "image": image_value}
+test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)" = %(platform)s
+""" % {"docker": docker, "image": image_value, "platform": quote(docker_platform)}
         result = self._run_streaming(
             host,
             script,
@@ -745,11 +766,13 @@ fi
         host: str,
         settings: BuildSettings,
         ssh_kwargs: dict | None,
+        docker_platform: str,
     ) -> str:
         if settings.cuda_arch:
             return settings.cuda_arch
-        script = "%s run --rm --gpus all --entrypoint python3 %s -c %s" % (
+        script = "%s run --rm --platform %s --gpus all --entrypoint python3 %s -c %s" % (
             quote(settings.docker_command),
+            quote(docker_platform),
             quote(image),
             quote("import torch; major, minor = torch.cuda.get_device_capability(); print(f'{major}{minor}')"),
         )
@@ -770,10 +793,57 @@ fi
         host: str,
         settings: BuildSettings,
         ssh_kwargs: dict | None,
+        docker_platform: str,
     ) -> bool:
-        script = "%s image inspect %s >/dev/null 2>&1" % (quote(settings.docker_command), quote(image))
+        script = 'test "$(%s image inspect --format %s %s 2>/dev/null)" = %s' % (
+            quote(settings.docker_command), quote("{{.Os}}/{{.Architecture}}"), quote(image), quote(docker_platform),
+        )
         result = self._run(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
         return bool(getattr(result, "success", False))
+
+    def _detect_docker_platform(self, host, settings, ssh_kwargs) -> str:
+        result = self._run(
+            host, "%s info --format '{{.OSType}}/{{.Architecture}}'" % quote(settings.docker_command),
+            ssh_kwargs=ssh_kwargs, timeout=30,
+        )
+        value = str(getattr(result, "stdout", "") or "").strip()
+        aliases = {"linux/aarch64": "linux/arm64", "linux/x86_64": "linux/amd64"}
+        value = aliases.get(value, value)
+        if not getattr(result, "success", False) or value not in {"linux/arm64", "linux/amd64"}:
+            raise RuntimeError("ColdSnap builder could not determine Docker platform on %s: %s" % (host, _result_detail(result)))
+        return value
+
+    @contextmanager
+    def _prepared_sources(self, plan, host, ssh_kwargs):
+        """Send only source checkouts to the build host, never credentials."""
+        remote = not should_run_locally(host, (ssh_kwargs or {}).get("ssh_user"))
+        with TemporaryDirectory(prefix="sparkrun-coldsnap-sources-") as temporary:
+            root = Path(temporary)
+            logger.log(PROGRESS, "ColdSnap builder: fetching pinned sources on the control node")
+            with progress_heartbeat(logger, "ColdSnap builder: fetching pinned sources"):
+                for source in plan.sources:
+                    path = root / (source.name.replace("_", "-") + "-" + source.revision)
+                    clone_pinned_source(path, source.url, source.ref, source.revision)
+            if not remote:
+                yield str(root)
+                return
+            created = self._run(
+                host, 'mktemp -d /tmp/sparkrun-coldsnap-sources.XXXXXXXXXX',
+                ssh_kwargs=ssh_kwargs, timeout=30,
+            )
+            destination = str(getattr(created, "stdout", "") or "").strip()
+            if not getattr(created, "success", False) or not re.fullmatch(r"/tmp/sparkrun-coldsnap-sources\.[A-Za-z0-9]{10}", destination):
+                raise RuntimeError("ColdSnap builder could not create private source staging directory: %s" % _result_detail(created))
+            try:
+                logger.log(PROGRESS, "ColdSnap builder: staging verified sources on %s", host)
+                result = run_rsync(str(root), host, destination, **(ssh_kwargs or {}), timeout=600)
+                if not result.success:
+                    raise RuntimeError("ColdSnap builder could not stage verified sources on %s: %s" % (host, _result_detail(result)))
+                yield destination
+            finally:
+                removed = self._run(host, "rm -rf -- %s" % quote(destination), ssh_kwargs=ssh_kwargs, timeout=30)
+                if not getattr(removed, "success", False):
+                    logger.warning("ColdSnap builder could not remove temporary source checkouts on %s: %s", host, destination)
 
     def prepare_image(
         self,
@@ -802,7 +872,7 @@ fi
             raise ValueError("ColdSnap builder engine must be vllm or sglang")
         if dry_run:
             plan = (
-                _build_plan(image, settings, settings.cuda_arch or "000", snapshot_driver, engine)
+                _build_plan(image, settings, settings.cuda_arch or "000", snapshot_driver, engine, docker_platform="linux/target")
                 if snapshot_driver is not None
                 else _dry_run_plan(image, settings, engine)
             )
@@ -817,7 +887,13 @@ fi
 
         logger.log(PROGRESS, "ColdSnap builder: preparing pinned input image on %s", build_host)
         logger.info("ColdSnap builder input: %s", image)
-        self._ensure_input_image(image, build_host, settings, ssh_kwargs)
+        docker_platform = self._detect_docker_platform(hosts[0], settings, ssh_kwargs)
+        if build_host != hosts[0] and self._detect_docker_platform(build_host, settings, ssh_kwargs) != docker_platform:
+            raise RuntimeError(
+                "ColdSnap runtime builds require the target Docker platform %s; "
+                "use delegated transfer mode to build on the cluster head instead of the control node" % docker_platform
+            )
+        self._ensure_input_image(image, build_host, settings, ssh_kwargs, docker_platform)
         snapshot_driver = snapshot_driver or self._detect_snapshot_driver(build_host, settings, ssh_kwargs)
         logger.info("ColdSnap builder snapshot driver: %s", snapshot_driver)
         if self._input_runtime_label(image, build_host, settings, ssh_kwargs) == "%s-cuda-criu-v1" % engine and self._input_supports_driver(
@@ -828,16 +904,16 @@ fi
             return image
 
         logger.log(PROGRESS, "ColdSnap builder: detecting target CUDA architecture")
-        cuda_arch = self._detect_cuda_arch(image, build_host, settings, ssh_kwargs)
+        cuda_arch = self._detect_cuda_arch(image, build_host, settings, ssh_kwargs, docker_platform)
         logger.info("ColdSnap builder CUDA architecture: sm_%s", cuda_arch)
-        plan = _build_plan(image, settings, cuda_arch, snapshot_driver, engine)
+        plan = _build_plan(image, settings, cuda_arch, snapshot_driver, engine, docker_platform=docker_platform)
         logger.debug(
             "ColdSnap builder plan: fingerprint=%s output=%s sources=%s",
             plan.fingerprint,
             plan.output_image,
             ", ".join("%s@%s" % (source.name, source.revision) for source in plan.sources),
         )
-        if not settings.rebuild and self._image_exists(plan.output_image, build_host, settings, ssh_kwargs):
+        if not settings.rebuild and self._image_exists(plan.output_image, build_host, settings, ssh_kwargs, docker_platform):
             logger.log(PROGRESS, "ColdSnap builder: reusing cached image %s", plan.output_image)
             return plan.output_image
 
@@ -847,13 +923,14 @@ fi
             build_host,
         )
         logger.info("ColdSnap builder output: %s", plan.output_image)
-        result = self._run_streaming(
-            build_host,
-            render_build_script(plan),
-            ssh_kwargs=ssh_kwargs,
-            timeout=3 * 60 * 60,
-            progress_label="ColdSnap builder: building runtime image",
-        )
+        with self._prepared_sources(plan, build_host, ssh_kwargs) as source_root:
+            result = self._run_streaming(
+                build_host,
+                render_build_script(plan, source_root=source_root),
+                ssh_kwargs=ssh_kwargs,
+                timeout=3 * 60 * 60,
+                progress_label="ColdSnap builder: building runtime image",
+            )
         if not getattr(result, "success", False):
             raise RuntimeError("ColdSnap image conversion failed on %s: %s" % (build_host, _result_detail(result)))
         _report_nccl_selection(result)

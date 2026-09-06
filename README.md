@@ -148,7 +148,7 @@ order:
 2. the pinned GitHub release and its `checksums.txt`;
 3. `docker.io/scitrera/coldsnap-binaries:<version>` and its platform-specific
    bundle manifest; and
-4. an exact source-tag build using Git/SSH and the source-pinned Go container.
+4. an exact source-tag build using controller-side Git and the source-pinned Go container.
 
 The OCI and source-build fallbacks require Docker on the sparkrun control node.
 The public OCI bundle needs no registry credentials. Sites mirroring either
@@ -168,7 +168,7 @@ executables before activating the cache generation.
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.1 pins ColdSnap 0.3.20. Upgrade both components together. The provider
+Plugin 0.1.2 pins ColdSnap 0.3.20. The provider
 advertises `runtime-v1` and delegates typed image/workload operations to
 `DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine
@@ -202,6 +202,39 @@ also set `COLDSNAP_TEST_DOCKER_IMAGE` to a locally cached shell image (for examp
 `busybox:1.37`) to enable the isolated container and image-build smoke tests.
 These tests create only uniquely named local test resources, clean them up,
 and do not request GPUs or publish images.
+
+## Cross-architecture controllers (development)
+
+The development retrieval fixes below are not included in released plugin
+0.1.2. Linux x64 control nodes can manage ARM64 Spark clusters; the two machines
+do not need the same CPU architecture.
+
+| Resource | Platform used |
+| --- | --- |
+| Controller tools | Control-node platform, such as `linux/amd64` |
+| Capture/runtime/NCCL images | Target Docker platform, such as `linux/arm64` |
+| Descriptor-only OCI image | Its declared image platform; only `create`/`cp`, never execution |
+
+Use automatic or delegated transfer mode for a separate x64 controller and
+Spark cluster. Runtime builds execute on the Spark head. An explicitly local
+cross-architecture build is rejected before pulling images; emulation is not a
+substitute for the target GPU. Docker pulls, probes and builds request the
+resolved platform explicitly, even when `DOCKER_DEFAULT_PLATFORM` differs.
+Descriptor and controller-bundle extraction use immutable references after
+resolution instead of reusing a mutable tag.
+
+Source checkouts are fetched and commit-verified on the control node, then
+staged temporarily on the build host using the cluster's existing SSH/rsync
+connection. They are removed after the build. GitHub credentials and keys are
+not copied or forwarded. Public sources use HTTPS. Private sources require
+read access on the control node through a Git credential helper, `gh auth
+login`, or existing trusted SSH access; the plugin does not disable host-key
+verification or change Git's global configuration. Every failed fetch stops
+before checkout or build. Public NCCL source fallback remains on the build host.
+
+For Sparkrun 0.3.8, select its git-only `develop-next` branch with
+`SPARKRUN_BRANCH=develop-next` when sourcing `dev.sh`. Sparkrun 0.3.7 is the
+latest published host version; both host versions are regression-tested.
 
 ## Licensing
 

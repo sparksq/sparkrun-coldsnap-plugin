@@ -14,7 +14,7 @@ Release assets are fetched from one pinned GitHub release, verified against its
 ``checksums.txt``, and installed atomically under sparkrun's cache directory.
 If that transport is unavailable, sparkrun extracts the same release from a
 multi-architecture OCI binary bundle before falling back to building the exact
-pinned tag over Git/SSH in a pinned Go container. Every path verifies the
+pinned tag over HTTPS in a pinned Go container. Every path verifies the
 release version, source commit, platform, and binary hashes before use.
 """
 
@@ -41,6 +41,7 @@ from typing import Any
 
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
 from sparkrun.plugins.coldsnap._controller_version import __version__ as DEFAULT_CONTROLLER_VERSION
+from sparkrun.plugins.coldsnap.git_sources import clone_pinned_source
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,6 @@ _BINARIES = (
 )
 _GO_CRIU_REPOSITORY = "https://github.com/sparksq/go-criu.git"
 _GO_CRIU_COMMIT = "29a4f2f8e8374d38319a9851d9c1ef880dd0a0e8"
-_GIT_TIMEOUT = 180
 _SOURCE_BUILD_TIMEOUT = 15 * 60
 _GO_DIRECTIVE = re.compile(r"^go[ \t]+(\d+\.\d+\.\d+)[ \t]*$", re.MULTILINE)
 _COLDSNAP_BUILDER = re.compile(
@@ -357,72 +357,24 @@ def _command_detail(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _clone_pinned_source(destination: Path, repository: str, version: str, commit: str) -> str:
-    git = shutil.which("git")
-    if not git:
-        raise ColdSnapToolError("Temporary ColdSnap source-build fallback requires git")
-    remote = "git@github.com:%s.git" % repository
-    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    logger.log(PROGRESS, "ColdSnap: cloning pinned controller source over Git/SSH")
+    remote = "https://github.com/%s.git" % repository
+    logger.log(PROGRESS, "ColdSnap: cloning pinned controller source over HTTPS")
     try:
         with progress_heartbeat(logger, "ColdSnap: cloning pinned controller source"):
-            clone = subprocess.run(
-                [git, "clone", "--quiet", "--depth", "1", "--branch", "v%s" % version, "--single-branch", remote, str(destination)],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_GIT_TIMEOUT,
-                env=environment,
-            )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ColdSnapToolError("Could not clone pinned ColdSnap source over SSH: %s" % error) from error
-    if clone.returncode != 0:
-        raise ColdSnapToolError("Could not clone pinned ColdSnap source over SSH: %s" % _command_detail(clone))
-    try:
-        resolved = subprocess.run(
-            [git, "-C", str(destination), "rev-parse", "HEAD"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ColdSnapToolError("Could not verify cloned ColdSnap source: %s" % error) from error
-    actual = resolved.stdout.strip()
-    if resolved.returncode != 0 or actual != commit:
-        observed = actual or _command_detail(resolved)
-        raise ColdSnapToolError("ColdSnap tag v%s resolved to %s, expected pinned commit %s" % (version, observed, commit))
+            clone_pinned_source(destination, remote, "refs/tags/v%s" % version, commit)
+    except RuntimeError as error:
+        raise ColdSnapToolError(str(error)) from error
     return remote
 
 
 def _clone_pinned_go_criu(destination: Path) -> None:
-    git = shutil.which("git")
-    if not git:
-        raise ColdSnapToolError("Temporary ColdSnap source-build fallback requires git")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    commands = (
-        [git, "init", "--quiet", str(destination)],
-        [git, "-C", str(destination), "remote", "add", "origin", _GO_CRIU_REPOSITORY],
-        [git, "-C", str(destination), "fetch", "--quiet", "--depth", "1", "origin", _GO_CRIU_COMMIT],
-        [git, "-C", str(destination), "checkout", "--quiet", "--detach", "FETCH_HEAD"],
-    )
     logger.log(PROGRESS, "ColdSnap: fetching pinned public go-criu source")
     try:
         with progress_heartbeat(logger, "ColdSnap: fetching pinned go-criu source"):
-            for command in commands:
-                result = subprocess.run(
-                    command,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=_GIT_TIMEOUT,
-                    env=environment,
-                )
-                if result.returncode != 0:
-                    raise ColdSnapToolError("Could not fetch pinned go-criu source: %s" % _command_detail(result))
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ColdSnapToolError("Could not fetch pinned go-criu source: %s" % error) from error
+            clone_pinned_source(destination, _GO_CRIU_REPOSITORY, _GO_CRIU_COMMIT, _GO_CRIU_COMMIT)
+    except RuntimeError as error:
+        raise ColdSnapToolError(str(error)) from error
 
 
 def _source_build_toolchain(source: Path) -> tuple[str, str]:
@@ -477,6 +429,8 @@ def _build_controller_binaries_with_docker(
         docker,
         "run",
         "--rm",
+        "--platform",
+        "%s/%s" % (os_name, arch),
         "--pull",
         "missing",
         "--user",
@@ -531,7 +485,11 @@ def install_controller_tool_from_ssh(
     *,
     commit: str = DEFAULT_CONTROLLER_COMMIT,
 ) -> ControllerTool:
-    """Temporarily build a private pinned release using Git/SSH and Docker."""
+    """Build a pinned release using controller-side Git and Docker.
+
+    The historical function name is retained for compatibility. Retrieval now
+    prefers HTTPS, with controller-local credentials and SSH as fallbacks.
+    """
     with tempfile.TemporaryDirectory(prefix="sparkrun-coldsnap-source-") as temporary:
         workspace = Path(temporary)
         source = workspace / "source"
@@ -740,7 +698,7 @@ def install_controller_tool_from_oci(
     with tempfile.TemporaryDirectory(prefix="sparkrun-coldsnap-oci-") as temporary:
         bundle = Path(temporary) / "bundle"
         bundle.mkdir()
-        created = _docker_command([docker, "create", "--platform", platform_name, image])
+        created = _docker_command([docker, "create", "--platform", platform_name, resolved])
         container = created.stdout.strip()
         if not container or any(character.isspace() for character in container):
             raise ColdSnapToolError("ColdSnap OCI binary bundle returned an invalid container ID")
@@ -821,14 +779,14 @@ def ensure_controller_tool(config: Any) -> ControllerTool:
         except ColdSnapToolError as oci_error:
             logger.log(
                 PROGRESS,
-                "ColdSnap: OCI binary-bundle acquisition failed; using temporary pinned Git/SSH source-build fallback",
+                "ColdSnap: OCI binary-bundle acquisition failed; using temporary pinned Git source-build fallback",
             )
             try:
                 return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit)
             except ColdSnapToolError as build_error:
                 raise ColdSnapToolError(
                     "GitHub release acquisition failed: %s OCI binary-bundle acquisition failed: %s "
-                    "Temporary Git/SSH source-build fallback also failed: %s" % (release_error, oci_error, build_error)
+                    "Temporary Git source-build fallback also failed: %s" % (release_error, oci_error, build_error)
                 ) from build_error
 
 
