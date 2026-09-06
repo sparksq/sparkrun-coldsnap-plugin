@@ -394,7 +394,7 @@ def test_temporary_source_build_uses_pinned_dockerized_go_toolchain(tmp_path, mo
 
     command = seen[0]
     assert command[:3] == ["/usr/bin/docker", "run", "--rm"]
-    assert command[command.index("--platform") + 1] == "linux/amd64"
+    assert command[command.index("--platform") + 1] == "%s/%s" % coldsnap_tool._platform()
     assert go_version == GO_VERSION
     assert builder_image == GO_BUILDER_IMAGE
     assert GO_BUILDER_IMAGE in command

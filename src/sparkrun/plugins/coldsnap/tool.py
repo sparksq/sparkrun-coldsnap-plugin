@@ -45,7 +45,7 @@ from sparkrun.plugins.coldsnap.git_sources import clone_pinned_source
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONTROLLER_COMMIT = "8bd6d320a3f9ffecb57103ed12c7f8053ceb9c70"
+DEFAULT_CONTROLLER_COMMIT = "c9c88a4758857ef95db0c1bfb46cd31fa3c750e6"
 DEFAULT_RELEASE_REPOSITORY = "sparksq/coldsnap"
 DEFAULT_BINARY_OCI_REPOSITORY = "docker.io/scitrera/coldsnap-binaries"
 _DOWNLOAD_TIMEOUT = 60
@@ -312,13 +312,15 @@ def _atomic_write(path: Path, payload: bytes, mode: int) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _verify_cached(root: Path, version: str, commit: str) -> ControllerTool | None:
+def _verify_cached(root: Path, version: str, commit: str, *, target_arch: str = "") -> ControllerTool | None:
     manifest_path = root / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if manifest.get("version") != version or manifest.get("commit") != commit or manifest.get("format") != 1:
+        return None
+    if target_arch and manifest.get("platform") != "linux-" + target_arch:
         return None
     for name in _BINARIES:
         path = root / name
@@ -329,6 +331,15 @@ def _verify_cached(root: Path, version: str, commit: str) -> ControllerTool | No
     adapter = root / "coldsnap-vllm-adapter"
     sglang_adapter = root / "coldsnap-sglang-adapter"
     criu_rpc = root / "coldsnap-criu-rpc"
+    if target_arch:
+        try:
+            for name in _BINARIES:
+                verify_target_elf(root / name, target_arch)
+        except ColdSnapToolError:
+            return None
+        # This bundle is data on the controller. Its release/hash/ELF identity
+        # is checked here; the adapter verifies its running identity on target.
+        return ControllerTool(controller, adapter, version, "cache", sglang_adapter, criu_rpc)
     try:
         result = subprocess.run(
             [str(controller), "version", "--json"],
@@ -349,6 +360,23 @@ def _verify_cached(root: Path, version: str, commit: str) -> ControllerTool | No
     if result.returncode != 0 or identity.get("version") != version or identity.get("commit") != commit:
         return None
     return ControllerTool(controller, adapter, version, "cache", sglang_adapter, criu_rpc)
+
+
+def verify_target_elf(path: Path, arch: str) -> None:
+    """Reject wrong-architecture target executables without running them."""
+    expected = {"amd64": 62, "arm64": 183}.get(arch)
+    if expected is None:
+        raise ColdSnapToolError("Unsupported target architecture: %s" % arch)
+    try:
+        with path.open("rb") as stream:
+            header = stream.read(64)
+    except OSError as error:
+        raise ColdSnapToolError("Cannot read target helper %s: %s" % (path, error)) from error
+    if (len(header) != 64 or header[:7] != b"\x7fELF\x02\x01\x01"
+            or int.from_bytes(header[16:18], "little") not in {2, 3}
+            or int.from_bytes(header[18:20], "little") != expected
+            or not os.access(path, os.X_OK)):
+        raise ColdSnapToolError("Target helper %s is not an executable Linux/%s ELF binary" % (path, arch))
 
 
 def _command_detail(result: subprocess.CompletedProcess[str]) -> str:
@@ -430,7 +458,7 @@ def _build_controller_binaries_with_docker(
         "run",
         "--rm",
         "--platform",
-        "%s/%s" % (os_name, arch),
+        "%s/%s" % _platform(),
         "--pull",
         "missing",
         "--user",
@@ -484,6 +512,7 @@ def install_controller_tool_from_ssh(
     arch: str,
     *,
     commit: str = DEFAULT_CONTROLLER_COMMIT,
+    target_tools: bool = False,
 ) -> ControllerTool:
     """Build a pinned release using controller-side Git and Docker.
 
@@ -527,7 +556,7 @@ def install_controller_tool_from_ssh(
             (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
         )
-    resolved = _verify_cached(root, version, commit)
+    resolved = _verify_cached(root, version, commit, **({"target_arch": arch} if target_tools else {}))
     if resolved is None:
         raise ColdSnapToolError("Source-built ColdSnap controller v%s failed identity verification" % version)
     return ControllerTool(
@@ -551,6 +580,7 @@ def install_controller_tool(
     token: str = "",
     release_assets: Callable[[str, str], Mapping[str, str]] | None = None,
     fetch_bytes: Callable[[str], bytes] | None = None,
+    target_tools: bool = False,
 ) -> ControllerTool:
     if not token and (release_assets is None or fetch_bytes is None):
         token = _github_token()
@@ -596,7 +626,7 @@ def install_controller_tool(
         (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
         stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
     )
-    resolved = _verify_cached(root, version, commit)
+    resolved = _verify_cached(root, version, commit, **({"target_arch": arch} if target_tools else {}))
     if resolved is None:
         raise ColdSnapToolError("Installed ColdSnap controller v%s failed identity verification" % version)
     return ControllerTool(
@@ -667,6 +697,7 @@ def install_controller_tool_from_oci(
     arch: str,
     *,
     commit: str = DEFAULT_CONTROLLER_COMMIT,
+    target_tools: bool = False,
 ) -> ControllerTool:
     """Install one architecture-matched, manifest-verified OCI binary bundle."""
     docker = shutil.which("docker")
@@ -734,7 +765,7 @@ def install_controller_tool_from_oci(
             (json.dumps(cache_manifest, indent=2, sort_keys=True) + "\n").encode(),
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
         )
-    installed = _verify_cached(root, version, commit)
+    installed = _verify_cached(root, version, commit, **({"target_arch": arch} if target_tools else {}))
     if installed is None:
         raise ColdSnapToolError("OCI-installed ColdSnap controller v%s failed identity verification" % version)
     return ControllerTool(
@@ -748,19 +779,39 @@ def install_controller_tool_from_oci(
 
 
 def ensure_controller_tool(config: Any) -> ControllerTool:
+    return _ensure_tool(config)
+
+
+def ensure_target_tool(config: Any, arch: str) -> ControllerTool:
+    if arch not in {"amd64", "arm64"}:
+        raise ColdSnapToolError("Unsupported target architecture: %s" % arch)
+    return _ensure_tool(config, target_arch=arch)
+
+
+def _ensure_tool(config: Any, *, target_arch: str = "") -> ControllerTool:
     version, commit, repository, oci_repository, configured_path, allow_download = _settings(config)
     if configured_path:
+        if target_arch:
+            target_path = config.plugin_settings("coldsnap").get("controller", {}).get("target_path")
+            if target_path:
+                verified = _verify_cached(Path(target_path).expanduser(), version, commit, target_arch=target_arch)
+                if verified is None:
+                    raise ColdSnapToolError("Configured controller.target_path is not a verified target binary bundle")
+                return verified
+            if target_arch != _platform()[1]:
+                raise ColdSnapToolError("Cross-architecture development controllers require controller.target_path with a release-matched target bundle")
         return _resolve_explicit(configured_path, version)
-    os_name, arch = _platform()
+    os_name, arch = ("linux", target_arch) if target_arch else _platform()
     root = _cache_path(config.cache_dir, version, os_name, arch)
-    cached = _verify_cached(root, version, commit)
+    cached = _verify_cached(root, version, commit, **({"target_arch": arch} if target_arch else {}))
     if cached is not None:
         return cached
     if not allow_download:
         raise ColdSnapToolError("ColdSnap controller v%s is not cached and plugins.coldsnap.controller.download is false" % version)
-    logger.log(PROGRESS, "ColdSnap: downloading controller v%s for %s/%s", version, os_name, arch)
+    logger.log(PROGRESS, "ColdSnap: downloading %s v%s for %s/%s", "target tools" if target_arch else "controller", version, os_name, arch)
+    install_options = {"target_tools": True} if target_arch else {}
     try:
-        return install_controller_tool(config.cache_dir, version, repository, os_name, arch, commit=commit)
+        return install_controller_tool(config.cache_dir, version, repository, os_name, arch, commit=commit, **install_options)
     except ColdSnapToolError as release_error:
         logger.log(
             PROGRESS,
@@ -775,6 +826,7 @@ def ensure_controller_tool(config: Any) -> ControllerTool:
                 os_name,
                 arch,
                 commit=commit,
+                **install_options,
             )
         except ColdSnapToolError as oci_error:
             logger.log(
@@ -782,7 +834,7 @@ def ensure_controller_tool(config: Any) -> ControllerTool:
                 "ColdSnap: OCI binary-bundle acquisition failed; using temporary pinned Git source-build fallback",
             )
             try:
-                return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit)
+                return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit, **install_options)
             except ColdSnapToolError as build_error:
                 raise ColdSnapToolError(
                     "GitHub release acquisition failed: %s OCI binary-bundle acquisition failed: %s "

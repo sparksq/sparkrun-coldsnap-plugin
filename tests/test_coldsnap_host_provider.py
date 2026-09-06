@@ -239,6 +239,7 @@ def test_service_scopes_provider_to_subprocess_and_scrubs_hf_credentials(monkeyp
         "/opt/coldsnap/bin/coldsnap",
         run_command=invoke,
         host_provider_factory=lambda *_args, **_kwargs: Provider(),
+        target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
     )
     service._invoke(
         _request("publish-native"),
@@ -277,6 +278,7 @@ def test_service_closes_provider_when_controller_is_interrupted():
         "/opt/coldsnap/bin/coldsnap",
         run_command=interrupt,
         host_provider_factory=lambda *_args, **_kwargs: Provider(),
+        target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
     )
     with pytest.raises(KeyboardInterrupt):
         service._invoke(

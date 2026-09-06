@@ -40,6 +40,11 @@ Spark nodes, use automatic or delegated transfer mode. See
 [cross-architecture controllers](README.md#cross-architecture-controllers-since-013)
 for platform selection, source access, and verification limits.
 
+Use plugin 0.1.4 or newer with ColdSnap 0.3.21 for an x64 controller and ARM64
+targets. Version 0.1.3 fixed retrieval but could still overlay AMD64 helpers on
+ARM64 workloads. Version 0.1.4 resolves separate target-native helpers for CRIU
+and native-pack verification; no manual Docker platform override is required.
+
 ## Install the preview
 
 ```bash
@@ -178,7 +183,7 @@ misses. The TTFT metric begins at Docker
 `State.StartedAt` and ends at the first non-empty streamed token; manager
 preparation and capsule pulls are outside that measurement.
 
-Plugin 0.1.3 pins ColdSnap 0.3.20 in [versions.yaml](versions.yaml), including
+Plugin 0.1.4 pins ColdSnap 0.3.21 in [versions.yaml](versions.yaml), including
 the required `runtime-v1` manager interface introduced in plugin 0.1.1. Historical
 benchmark reports and raw logs are kept outside the public source repository;
 they are not timing guarantees for this release.

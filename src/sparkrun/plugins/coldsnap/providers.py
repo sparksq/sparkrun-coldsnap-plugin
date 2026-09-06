@@ -146,11 +146,29 @@ def _stage_payload_verifier(
     if not source.is_file() or not os.access(source, os.X_OK):
         raise RuntimeError("ColdSnap payload verifier is not an executable file: %s" % source)
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    manifest_path = source.with_name("manifest.json")
+    identity = None
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("sha256", {}).get(source.name) != digest:
+            raise RuntimeError("ColdSnap payload verifier does not match its release manifest")
+        identity = {"version": manifest["version"], "commit": manifest["commit"]}
     root = str(Path(state_root) / "tools" / "payload-verifier" / digest)
     target = str(Path(root) / "coldsnap-payload-verifier")
     hosts = sorted({str(unit["host"]) for unit in request["launch"]["units"]})
     logger.log(PROGRESS, "ColdSnap: staging Go payload verifier on %d host(s)", len(hosts))
     session = open_cluster_host_session(plan.cluster, ssh_kwargs=ssh_kwargs)
+
+    def verify_identity(host: str) -> None:
+        if identity is None:
+            return  # Explicit development binaries have no release manifest.
+        result = session.execute(host, [target, "version", "--json"], timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError("ColdSnap payload verifier cannot execute on %s: %s" % (
+                host, (result.stderr or result.stdout).decode(errors="replace")[-1000:],
+            ))
+        if json.loads(result.stdout) != identity:
+            raise RuntimeError("ColdSnap payload verifier release identity mismatch on %s" % host)
 
     def stage(host: str) -> None:
         created = session.execute(host, ["install", "-d", "-m", "0700", root], timeout=60)
@@ -189,6 +207,7 @@ def _stage_payload_verifier(
             raise RuntimeError(message)
         observed = session.execute(host, ["sha256sum", target], timeout=60)
         if observed.returncode == 0 and observed.stdout.decode(errors="replace").split(maxsplit=1)[0:1] == [digest]:
+            verify_identity(host)
             return
         temporary = target + ".tmp.%d" % os.getpid()
         session.upload(host, [str(source)], temporary)
@@ -202,6 +221,7 @@ def _stage_payload_verifier(
         published = session.execute(host, ["mv", "-f", temporary, target], timeout=60)
         if published.returncode != 0:
             raise RuntimeError((published.stderr or published.stdout or b"publish verifier failed").decode(errors="replace")[-1000:])
+        verify_identity(host)
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(hosts), 20)) as executor:

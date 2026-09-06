@@ -225,16 +225,21 @@ print(json.dumps({
 
 
 class _VerifierStageSession:
-    def __init__(self, *, fail_first_install=False, fail_all_installs=False):
+    def __init__(self, *, fail_first_install=False, fail_all_installs=False, identity=None):
         self.files: dict[tuple[str, str], bytes] = {}
         self.closed = False
         self.lock = threading.Lock()
         self.fail_first_install = fail_first_install
         self.fail_all_installs = fail_all_installs
         self.install_attempts: dict[str, int] = {}
+        self.identity = identity
+        self.identity_checks = []
 
     def execute(self, host, arguments, **_kwargs):
         with self.lock:
+            if arguments[1:] == ["version", "--json"]:
+                self.identity_checks.append(host)
+                return HostCommandResult(host, 0, stdout=json.dumps(self.identity).encode())
             if arguments[0] == "install":
                 self.install_attempts[host] = self.install_attempts.get(host, 0) + 1
                 if self.fail_all_installs or (self.fail_first_install and self.install_attempts[host] == 1):
@@ -287,6 +292,34 @@ def test_payload_verifier_is_staged_once_per_data_host(tmp_path, monkeypatch):
     assert target.endswith("/coldsnap-payload-verifier")
     assert {host for host, path in session.files if path == target} == {"h1", "h2"}
     assert {payload for (host, path), payload in session.files.items() if path == target} == {b"release-matched-adapter"}
+    assert session.closed
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize("matching", [False, True])
+def test_payload_verifier_checks_remote_release_identity_even_on_cache_hit(tmp_path, monkeypatch, warm, matching):
+    _recipe, options, plan, sctx = _setup()
+    request = build_request("restore", options, plan=plan, sctx=sctx)
+    verifier = tmp_path / "adapter"
+    verifier.write_bytes(b"release-matched-adapter")
+    verifier.chmod(0o755)
+    digest = hashlib.sha256(verifier.read_bytes()).hexdigest()
+    expected = {"version": "0.3.21", "commit": "a" * 40}
+    (tmp_path / "manifest.json").write_text(json.dumps({**expected, "sha256": {"adapter": digest}}))
+    session = _VerifierStageSession(identity=expected if matching else {**expected, "commit": "b" * 40})
+    target = "/cache/coldsnap/tools/payload-verifier/%s/coldsnap-payload-verifier" % digest
+    if warm:
+        for host in plan.host_list:
+            session.files[(host, target)] = verifier.read_bytes()
+    monkeypatch.setattr("sparkrun.transports.open_cluster_host_session", lambda *_args, **_kwargs: session)
+    def stage():
+        return _stage_payload_verifier(verifier, request=request, plan=plan, state_root="/cache/coldsnap", ssh_kwargs={})
+    if matching:
+        assert stage() == target
+        assert sorted(session.identity_checks) == sorted(plan.host_list)
+    else:
+        with pytest.raises(RuntimeError, match="release identity mismatch"):
+            stage()
     assert session.closed
 
 
@@ -1727,7 +1760,9 @@ def test_explicit_capture_uses_shared_prepared_image_identities(monkeypatch):
         ]
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    request, removed, failures = ColdSnapService("coldsnap", run_command=invoke).execute_explicit(
+    request, removed, failures = ColdSnapService(
+        "coldsnap", run_command=invoke, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+    ).execute_explicit(
         "capture",
         options,
         plan=plan,
@@ -1967,7 +2002,9 @@ def test_publication_promotes_same_capture_as_new_descriptor_generation(tmp_path
         )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    request, removed, failures = ColdSnapService("coldsnap", run_command=invoke).execute_explicit(
+    request, removed, failures = ColdSnapService(
+        "coldsnap", run_command=invoke, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+    ).execute_explicit(
         "publish",
         options,
         plan=plan,
@@ -2035,7 +2072,9 @@ def test_native_publication_promotes_provider_and_refreshes_portable_descriptor(
         Path(request["output"]).write_text(json.dumps(updated), encoding="utf-8")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    request, removed, failures = ColdSnapService("coldsnap", run_command=invoke).execute_explicit(
+    request, removed, failures = ColdSnapService(
+        "coldsnap", run_command=invoke, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+    ).execute_explicit(
         "publish-native",
         options,
         plan=plan,
@@ -2887,7 +2926,15 @@ def test_strategy_native_staging_uses_explicit_controller_adapter(tmp_path, monk
         return SimpleNamespace(request=current, selected_mode="recovery", failures=())
 
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.stage_native_packs", stage)
-    service = ColdSnapService(tool_resolver=lambda _config: pytest.fail("managed controller was resolved"))
+    def target_resolver(**kwargs):
+        assert kwargs["binary"] == str(controller)
+        assert kwargs["engine"] == "vllm"
+        assert kwargs["hosts"] == plan.host_list
+        return SimpleNamespace(verifier=adapter)
+
+    service = ColdSnapService(
+        tool_resolver=lambda _config: pytest.fail("managed controller was resolved"), target_tool_resolver=target_resolver,
+    )
     state = service.stage_restore(
         ExecutionContext(options=options, plan=plan, sctx=sctx),
         RestoreDescriptor(request=request, artifact={}),
@@ -2974,7 +3021,9 @@ def test_coldsnap_prepare_only_receipt_precedes_activation(tmp_path, monkeypatch
         "sparkrun.plugins.coldsnap.service.stage_native_packs",
         lambda request, **_kwargs: SimpleNamespace(request=request, selected_mode="recovery", failures=()),
     )
-    service = ColdSnapService("coldsnap-test", run_command=run_command)
+    service = ColdSnapService(
+        "coldsnap-test", run_command=run_command, target_tool_resolver=lambda **_kwargs: SimpleNamespace(environment={}),
+    )
     execution = ExecutionContext(options=options, plan=plan, sctx=sctx)
     descriptor = service.describe_restore(execution)
     state = service.stage_restore(execution, descriptor)

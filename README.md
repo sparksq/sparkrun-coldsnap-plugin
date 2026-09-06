@@ -13,11 +13,12 @@ runtime.
 
 Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
 
-Release 0.1.3 fixes Docker platform selection for x64 controllers managing
-ARM64 Spark clusters and stages verified build sources from the controller,
-so Spark nodes do not need GitHub credentials. See
+Release 0.1.4 pins ColdSnap 0.3.21 and separates control-node executables from
+target-native CRIU and payload-verifier helpers. This fixes activation staging
+for x64 controllers managing ARM64 Spark clusters, beyond the Docker/Git
+retrieval fixes in 0.1.3. See
 [cross-architecture controllers](#cross-architecture-controllers-since-013)
-for build modes and source-access requirements. The ColdSnap pin remains 0.3.20.
+for build modes and source-access requirements.
 
 Release 0.1.2 added explicit SGLang materialization through capture and verified
 restore, using ColdSnap 0.3.20. See the
@@ -174,7 +175,7 @@ executables before activating the cache generation.
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.3 pins ColdSnap 0.3.20. The provider
+Plugin 0.1.4 pins ColdSnap 0.3.21. The provider
 advertises `runtime-v1` and delegates typed image/workload operations to
 `DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine
@@ -211,13 +212,15 @@ and do not request GPUs or publish images.
 
 ## Cross-architecture controllers (since 0.1.3)
 
-Plugin 0.1.3 includes the retrieval fixes below. Linux x64 control nodes can
-manage ARM64 Spark clusters; the two machines do not need the same CPU
-architecture.
+Plugin 0.1.3 includes the Docker/Git retrieval fixes below; 0.1.4 with ColdSnap
+0.3.21 additionally fixes the target activation helpers. Linux x64 control nodes
+can manage ARM64 Spark clusters; the two machines do not need the same CPU
+architecture. Version 0.1.3 alone is not sufficient for cross-architecture capture.
 
 | Resource | Platform used |
 | --- | --- |
 | Controller tools | Control-node platform, such as `linux/amd64` |
+| Remotely executed CRIU helper and payload verifier | Target platform, such as `linux/arm64` |
 | Capture/runtime/NCCL images | Target Docker platform, such as `linux/arm64` |
 | Descriptor-only OCI image | Its declared image platform; only `create`/`cp`, never execution |
 
@@ -238,15 +241,34 @@ login`, or existing trusted SSH access; the plugin does not disable host-key
 verification or change Git's global configuration. Every failed fetch stops
 before checkout or build. Public NCCL source fallback remains on the build host.
 
+Target binaries use the same release, commit, and checksum verification as the
+controller bundle, but are not executed on the control node. Target platform
+probes and ELF checks reject mismatches before controller invocation; ColdSnap
+also checks every target and the staged verifier's running release identity
+before launching capture/restore workloads. Native-pack staging checks the
+verifier's release identity remotely as well. Source-build fallback uses a
+controller-native Go container with explicit `GOOS`/`GOARCH` for the target.
+
+Both engines and drivers use this separation. Each operation requires one
+common Linux target CPU architecture. A configured development controller can
+use `plugins.coldsnap.controller.target_path` to point to a local directory
+containing the matching target bundle and `manifest.json`. For an explicit
+`--coldsnap-binary`, cross-architecture use requires both local target paths
+`COLDSNAP_TARGET_PAYLOAD_VERIFIER` and `COLDSNAP_TARGET_CRIU_RPC`; use the selected
+engine's target adapter as verifier. Existing compatible capsules are unchanged.
+
 For Sparkrun 0.3.8, select its git-only `develop-next` branch with
 `SPARKRUN_BRANCH=develop-next` when sourcing `dev.sh`. Sparkrun 0.3.7 is the
 latest published host version; both host versions are regression-tested.
 
-Retrieval verification includes real descriptor extraction with an overridden
-Docker default platform and controller-to-Spark source staging, plus regression
-tests against both host versions. These checks were run from an ARM64 control
-node; a full x64-to-Spark materialization and GPU inference cycle has not been
-qualified for this release.
+The earlier retrieval checks used an ARM64 controller with an overridden Docker
+default platform. The 0.1.4 qualification also ran an actual AMD64 controller
+process on a physical x64 host against an ARM64 Spark target through the manager
+provider. Both engine verifiers passed target release-identity and native-payload
+checks, and the CRIU helper executed inside a non-GPU ARM64 container at its
+overlaid path. The incompatible controller-native helper was rejected before
+staging. This is helper-boundary qualification, not a new full model
+materialization or GPU TTFT matrix.
 
 ## Licensing
 

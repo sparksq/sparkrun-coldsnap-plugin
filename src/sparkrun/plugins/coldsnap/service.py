@@ -38,6 +38,7 @@ from sparkrun.plugins.coldsnap.compatibility import (
     verify_coldsnap_hosts,
 )
 from sparkrun.plugins.coldsnap.host_provider import ColdSnapHostProvider
+from sparkrun.plugins.coldsnap.target_tools import prepare_target_tools
 from sparkrun.plugins.coldsnap.local_overlays import (
     promote_local_materialization,
     promote_local_overlay,
@@ -211,11 +212,13 @@ class ColdSnapService:
         run_command: RunCommand = subprocess.run,
         tool_resolver: ToolResolver = ensure_controller_tool,
         host_provider_factory=ColdSnapHostProvider,
+        target_tool_resolver=prepare_target_tools,
     ):
         self.binary = binary
         self.run_command = run_command
         self.tool_resolver = tool_resolver
         self.host_provider_factory = host_provider_factory
+        self.target_tool_resolver = target_tool_resolver
 
     def describe_restore(
         self,
@@ -881,16 +884,9 @@ class ColdSnapService:
         """Resolve the selected engine adapter used as the remote Go verifier."""
 
         engine = "sglang" if plan.runtime.runtime_name == "sglang" else "vllm"
-        explicit = binary or self.binary
-        if explicit:
-            environment = explicit_controller_environment(explicit)
-            key = "COLDSNAP_%s_ADAPTER" % engine.upper()
-            candidate = Path(environment.get(key, ""))
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                return candidate
-            raise RuntimeError("development ColdSnap controller has no %s adapter payload verifier" % engine)
-        tool = self.tool_resolver(sctx.config)
-        return tool.payload_verifier(engine)
+        return self.target_tool_resolver(
+            hosts=plan.host_list, engine=engine, cluster=plan.cluster, sctx=sctx, binary=binary or self.binary,
+        ).verifier
 
     def _restore_artifact_path(
         self,
@@ -950,6 +946,12 @@ class ColdSnapService:
             logger.info("ColdSnap controller: %s v%s (%s)", tool.path, tool.version, tool.source)
             controller_label = "controller v%s (%s)" % (tool.version, tool.source)
         if cluster is not None:
+            if request["operation"] in {"capture", "restore", "publish-native"}:
+                target_tools = self.target_tool_resolver(
+                    hosts=[str(unit["host"]) for unit in request["launch"]["units"]],
+                    engine=request["launch"]["engine"], cluster=cluster, sctx=sctx, binary=binary or self.binary,
+                )
+                environment = {**os.environ, **(environment or {}), **target_tools.environment}
             site_policy = resolve_coldsnap_policy(
                 cluster=cluster,
                 sctx=sctx,
