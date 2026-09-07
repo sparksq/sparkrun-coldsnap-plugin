@@ -5,6 +5,7 @@
 
 """One-shot materialization owns only its temporary verification launches."""
 
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -13,8 +14,67 @@ from click.testing import CliRunner
 
 import sparkrun.api as api
 from sparkrun.plugins.coldsnap.cli import _run_materialization_workload, build_command
+from sparkrun.plugins.coldsnap.request import build_request
 from sparkrun.plugins.coldsnap.service import ColdSnapService
 from test_coldsnap_plugin import _setup, _sglang_setup
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("driver", ["n580", "n610"])
+@pytest.mark.parametrize("mode", [None, "off", "async", "required"])
+@pytest.mark.parametrize("weights", ["auto", "native", "recovery", "cache-only-auto"])
+def test_restore_generation_defaults_off_independent_of_weight_selection(engine, driver, mode, weights):
+    _, options, plan, sctx = (_setup if engine == "vllm" else _sglang_setup)()
+    kwargs = dict(plan=plan, sctx=sctx, snapshot_driver=driver, native_materialization=mode, weight_mode=weights)
+    if engine == "sglang" and mode in {"async", "required"}:
+        with pytest.raises(ValueError, match="SGLang does not support"):
+            build_request("restore", options, **kwargs)
+    else:
+        request = build_request("restore", options, **kwargs)
+        assert request["policy"]["weights"]["native"]["materialize"] == (mode or "off")
+        assert request["policy"]["weights"]["mode"] == weights
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("driver", ["n580", "n610"])
+@pytest.mark.parametrize("operation", ["capture", "publish", "publish-native", "sleep", "wake", "status"])
+def test_restore_generation_default_does_not_change_other_operations(engine, driver, operation):
+    _, options, plan, sctx = (_setup if engine == "vllm" else _sglang_setup)()
+    request = build_request(
+        operation,
+        options,
+        plan=plan,
+        sctx=sctx,
+        snapshot_driver=driver,
+        native_repository="org/native",
+        native_revision="a" * 40,
+    )
+    assert "materialize" not in request["policy"]["weights"]["native"]
+
+
+@pytest.mark.parametrize(
+    "engine,driver,native,residual",
+    [
+        ("vllm", "n580", "off", "required"),
+        ("vllm", "n610", "required", "off"),
+        ("sglang", "n580", "required", "required"),
+        ("sglang", "n610", "required", "required"),
+    ],
+)
+def test_materialize_default_plan_remains_explicit_preparation(monkeypatch, engine, driver, native, residual):
+    _, _, plan, sctx = (_setup if engine == "vllm" else _sglang_setup)()
+    monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
+    monkeypatch.setattr(api, "plan", lambda *a, **kw: plan)
+    for operation in ("run", "stop"):
+        monkeypatch.setattr(api, operation, lambda *a, **kw: pytest.fail("dry-run must not launch or stop workloads"))
+    result = CliRunner().invoke(build_command(), ["materialize", "recipe.yaml", "--dry-run", "--snapshot-driver", driver])
+    assert result.exit_code == 0, result.output
+    report = json.loads(result.output)
+    assert report["engine"] == engine
+    assert report["snapshot_driver"] == driver
+    assert report["native_weights"] == native
+    assert report["residual_overlay"] == residual
+    assert not report["hardware_verified"]
 
 
 def test_temporary_runs_allocate_ids_before_launch_without_changing_artifact_identity(monkeypatch, tmp_path):

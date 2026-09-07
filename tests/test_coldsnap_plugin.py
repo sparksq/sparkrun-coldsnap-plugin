@@ -443,7 +443,7 @@ def test_build_request_uses_resolved_unit_commands_without_profile_file():
     assert "validation" not in request
     assert "process" not in request["policy"]
     assert "files_by_worker" not in request["policy"]["weights"]["native"]
-    assert "materialize" not in request["policy"]["weights"]["native"]
+    assert request["policy"]["weights"]["native"]["materialize"] == "off"
     assert request["policy"]["capsule"] == {
         "repository": "registry.example/coldsnap/qwen",
     }
@@ -489,7 +489,7 @@ def test_sglang_native_materialization_capability_is_explicit():
     plan = replace(plan, recipe=recipe, runtime=SglangRuntime())
 
     request = build_request("restore", options, plan=plan, sctx=sctx)
-    assert "materialize" not in request["policy"]["weights"]["native"]
+    assert request["policy"]["weights"]["native"]["materialize"] == "off"
     with pytest.raises(ValueError, match="SGLang does not support.*required"):
         build_request(
             "restore",
@@ -538,7 +538,7 @@ def test_build_request_preserves_explicit_coldsnap_runtime_overrides():
     }
 
 
-def test_build_request_omits_all_undeclared_coldsnap_runtime_defaults():
+def test_build_request_omits_undeclared_runtime_defaults_except_restore_generation_off():
     recipe, options, plan, sctx = _setup()
     document = recipe.to_dict()
     document["coldsnap"] = {
@@ -551,7 +551,7 @@ def test_build_request_omits_all_undeclared_coldsnap_runtime_defaults():
     request = build_request("restore", options, plan=plan, sctx=sctx)
 
     assert request["policy"] == {
-        "weights": {"native": {}},
+        "weights": {"native": {"materialize": "off"}},
         "cache": {"seed": True, "paths": ["/var/cache/coldsnap/runtime"]},
         "capsule": {"repository": "registry.example/coldsnap/qwen"},
         "compatibility": {"enforce_captured_driver_floor": False},
@@ -1499,7 +1499,7 @@ def test_sglang_normal_run_selects_paired_local_capture_without_write_behind(tmp
     result = ColdSnapService().describe_restore(ExecutionContext(options=options, plan=plan, sctx=sctx), hardware)
     assert result.request["artifact"] == str(local)
     assert result.request["policy"]["weights"]["mode"] == mode
-    assert "materialize" not in result.request["policy"]["weights"]["native"]
+    assert result.request["policy"]["weights"]["native"]["materialize"] == "off"
 
 
 def test_materialize_n610_auto_requires_only_native_weights(monkeypatch):

@@ -50,6 +50,11 @@ def build_request(
         raise ValueError("native publication requires --hf-repo and --revision")
     if native_materialization is not None and native_materialization not in {"off", "async", "required"}:
         raise ValueError("native materialization must be off, async, or required")
+    if operation == "restore" and native_materialization is None:
+        # Ordinary launches consume prepared assets, without implicitly writing
+        # native packs. Emit this even for older controllers that default to
+        # async; explicit materialize operations supply their required policy.
+        native_materialization = "off"
     if artifact_scope not in {"portable", "target-local"}:
         raise ValueError("artifact_scope must be portable or target-local")
     if artifact_scope == "target-local" and (operation != "capture" or snapshot_driver != "n580"):

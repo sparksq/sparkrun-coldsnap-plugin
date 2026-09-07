@@ -226,6 +226,44 @@ to measure matched cases on your own qualified deployment. The
 describes the manager contract and verification boundaries. Fresh captures and
 live lifecycle operations require separate qualification from this TTFT matrix.
 
+## Materialize and launch defaults
+
+Ordinary ColdSnap `run`/`restore` launches default native-weight **generation**
+to `off` for both engines on both drivers. This is explicit in the plugin's
+request, including with older controllers that default vLLM to `async`.
+It does not disable staging or consumption of existing verified native packs,
+model/image preparation, or use of previously materialized local state.
+Ordinary launches do not automatically capture fresh local residuals.
+
+The dedicated `sparkrun coldsnap materialize` command has different defaults:
+
+| Runtime | Driver | Ordinary launch: generate native packs | Explicit materialize: native weights | Explicit materialize: residual/runtime state |
+| --- | --- | --- | --- | --- |
+| vLLM | n580 | `off` | `off` (optional) | `required`: target-local recovery residual overlay |
+| vLLM | n610 | `off` | `required` | `off`: reuse the existing capsule |
+| SGLang | n580 | `off` | `required` | `required`: matching local capture/replay state |
+| SGLang | n610 | `off` | `required` | `required`: matching local capture/replay state |
+
+Explicit materialization prepares or reuses compatible assets, verifies them,
+then stops its temporary serving workload and exits. Normal launches stay
+serving after validation. For vLLM, native preparation uses a blocking
+`required` restore-time writer when a pack must be generated. SGLang instead
+generates packs during capture, then verifies a restore with generation `off`;
+it does not support recovery-time write-behind on either driver.
+
+To opt into vLLM native generation on n580, pass `--native-weights required`
+to `materialize`. Explicit restore still accepts `--materialize-native async`
+or `required` for vLLM; SGLang rejects those restore-time modes. These overrides
+do not change the ordinary-launch default.
+
+Weight **selection** is independent: when the recipe/command omits a weight
+mode, vLLM/n580 defaults to `recovery`; the other three combinations default to
+`auto` (prefer compatible verified native packs, otherwise recovery). Explicit
+recipe/command modes are preserved. vLLM/n580 `auto` also selects recovery when
+using a materialized recovery-only residual overlay; explicit `native` uses
+the portable capsule instead. See the SGLang section below for its paired-state
+requirements and recovery-only option.
+
 ## Explicit SGLang materialization (since 0.1.2)
 
 Plugin 0.1.2 adds `materialize` support for SGLang on n580 and n610;

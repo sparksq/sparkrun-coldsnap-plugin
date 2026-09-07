@@ -26,6 +26,10 @@ restore, using ColdSnap 0.3.20. See the
 for native and recovery-only preparation; ordinary recovery restores do not
 gain asynchronous/write-behind materialization.
 
+See [materialize and launch defaults](DEV_PREVIEW.md#materialize-and-launch-defaults)
+for the runtime/driver matrix. Ordinary launches default native generation to
+`off`; dedicated materialization prepares assets and stops its temporary service.
+
 The plugin is imported by sparkrun as `sparkrun.plugins.coldsnap` and remains
 subject to sparkrun's `plugins.coldsnap` feature gate. The source repository
 and exact commit included by a sparkrun release are recorded in that release's
