@@ -394,14 +394,15 @@ def test_provider_rejects_unknown_fields_and_trailing_messages():
             "host": "node-a",
             "arguments": ["true"],
         }
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.connect(str(provider.socket))
-        client.sendall(json.dumps(request).encode() + b"\n{}\n")
-        client.shutdown(socket.SHUT_WR)
-        payload = b""
-        while chunk := client.recv(65536):
-            payload += chunk
-        client.close()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(str(provider.socket))
+            client.sendall(json.dumps(request).encode() + b"\n{}\n")
+            # Trailing data is enough to reject the request without EOF.
+            # A half-close here races with that rejection on macOS (ENOTCONN).
+            payload = b""
+            while chunk := client.recv(65536):
+                payload += chunk
         trailing = json.loads(payload)
 
     assert not unknown["ok"] and "unknown fields" in unknown["error"]
