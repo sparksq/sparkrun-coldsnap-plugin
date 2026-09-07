@@ -13,10 +13,11 @@ runtime.
 
 Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
 
-Release 0.1.4 pins ColdSnap 0.3.21 and separates control-node executables from
-target-native CRIU and payload-verifier helpers. This fixes activation staging
-for x64 controllers managing ARM64 Spark clusters, beyond the Docker/Git
-retrieval fixes in 0.1.3. See
+Release 0.1.5 pins ColdSnap 0.3.22 and adds native macOS controllers on AMD64
+and ARM64, rank-local startup timings, and coordinator cleanup after dedicated
+materialization. Ordinary launches default native-weight generation to `off`.
+Control-node executables remain separate from target-native CRIU and
+payload-verifier helpers. See
 [cross-architecture controllers](#cross-architecture-controllers-since-013)
 for build modes and source-access requirements.
 
@@ -49,20 +50,16 @@ These are runtime overlays, not edits to the user's `registries.yaml`. A user
 can still disable, remove, trust, or repoint either registry through the normal
 sparkrun registry commands.
 
-## Development
+## Startup timing
 
-The `feature/rank0-startup-ttft` development work adds a startup-readiness
-handoff to Sparkrun's matching `develop-next` implementation. With the matching
-ColdSnap controller source, running restores log Docker-start-to-port-open,
+Release 0.1.5 adds a startup-readiness handoff for Sparkrun hosts that support
+startup observations. Running restores log Docker-start-to-port-open,
 Docker-start-to-HTTP-health, and Docker-start-to-first-nonempty-token timings,
 all observed on rank 0. ColdSnap's existing acceptance request now streams and
 still validates the entire final reply; the plugin passes that observation to
 the host so it does not run a second inference. Warm restores do not claim TTFT.
 
-This is not included in plugin 0.1.4 or its pinned ColdSnap 0.3.21 controller.
-Use `sparkrun coldsnap restore --coldsnap-binary /path/to/coldsnap` and the
-matching sibling tools while testing (`COLDSNAP_BINARY` selects it in the
-benchmark harness). The optional host handoff remains compatible with published Sparkrun
+The optional host handoff remains compatible with published Sparkrun
 0.3.7: older hosts do not receive an unsupported constructor argument, and old
 controllers without timing receipts do not gain invented measurements.
 `workload-inspect` returns Docker's nanosecond start timestamp only when the
@@ -74,6 +71,8 @@ can precede real inference. These measurements exclude preparation before
 container start and differ from the historical external TTFT observer; new
 qualification comparisons must use matched profiles and fresh runs. Normal
 Sparkrun `--no-follow` behavior stays non-blocking.
+
+## Development
 
 Set up and activate the development environment from the repository root:
 
@@ -175,8 +174,8 @@ distribution path; GitHub release assets do not replace that approval process.
 
 ## Controller acquisition
 
-The plugin resolves the release-pinned ColdSnap controller, vLLM adapter,
-SGLang adapter, and CRIU RPC helper as one verified tool set. It checks, in
+The plugin resolves the release-pinned ColdSnap controller and both engine
+adapters as one verified tool set, plus CRIU RPC on Linux. It checks, in
 order:
 
 1. the local sparkrun tool cache;
@@ -185,7 +184,8 @@ order:
    bundle manifest; and
 4. an exact source-tag build using controller-side Git and the source-pinned Go container.
 
-The OCI and source-build fallbacks require Docker on the sparkrun control node.
+The Linux OCI and source-build fallbacks require Docker on the sparkrun control
+node. macOS OCI acquisition reads the registry directly without Docker.
 The public OCI bundle needs no registry credentials. Sites mirroring either
 source may override it without changing recipes:
 
@@ -198,12 +198,12 @@ plugins:
 ```
 
 Every acquisition path verifies the configured release version and full Git
-commit, the target OS and architecture, and the SHA-256 digest of all four
-executables before activating the cache generation.
+commit, the target OS and architecture, and the SHA-256 digest of every
+executable (four on Linux, three on macOS) before activating the cache generation.
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.4 pins ColdSnap 0.3.21. The provider
+Plugin 0.1.5 pins ColdSnap 0.3.22. The provider
 advertises `runtime-v1` and delegates typed image/workload operations to
 `DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine
@@ -226,8 +226,8 @@ plugins:
       download: false
 ```
 
-The controller's vLLM/SGLang adapters and CRIU RPC helper must be available
-beside it. The default acquisition path uses the exact controller release and
+The controller's vLLM/SGLang adapters must be available beside it, along with
+CRIU RPC on Linux. The default acquisition path uses the exact controller release and
 source commit pinned by this plugin. Use a separate Python environment when
 testing local overrides so the working plugin installation is unaffected.
 
@@ -242,8 +242,8 @@ and do not request GPUs or publish images.
 
 ### Control-node platforms
 
-The current source supports Linux and macOS control nodes on AMD64 and ARM64;
-the older releases described below remain Linux-only. GPU targets must remain
+Release 0.1.5 supports Linux and macOS control nodes on AMD64 and ARM64;
+earlier releases remain Linux-only. GPU targets must remain
 qualified Linux hosts. Native Windows controllers are not supported.
 
 The managed controller and its two engine adapters are native to the control

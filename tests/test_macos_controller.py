@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,35 @@ import pytest
 
 from sparkrun.plugins.coldsnap import tool, target_tools
 from test_coldsnap_tool import VERSION, COMMIT, REPOSITORY, OCI_REPOSITORY, _archive, _config, _write_source_build_contract
+
+
+@pytest.mark.skipif(os.environ.get("COLDSNAP_TEST_RELEASE_DOWNLOAD") != "1", reason="opt-in published release qualification")
+def test_published_macos_oci_tools_execute_natively(tmp_path):
+    os_name, arch = tool._platform()
+    if os_name != "darwin":
+        pytest.skip("native macOS release qualification")
+    selected = tool.install_controller_tool_from_oci(
+        tmp_path,
+        tool.DEFAULT_CONTROLLER_VERSION,
+        tool.DEFAULT_RELEASE_REPOSITORY,
+        tool.DEFAULT_BINARY_OCI_REPOSITORY,
+        os_name,
+        arch,
+        commit=tool.DEFAULT_CONTROLLER_COMMIT,
+    )
+    assert selected.criu_rpc_path is None
+    for executable in (selected.path, selected.adapter_path, selected.sglang_adapter_path):
+        result = subprocess.run([str(executable), "version", "--json"], check=True, capture_output=True, text=True, timeout=30)
+        assert json.loads(result.stdout) == {"version": tool.DEFAULT_CONTROLLER_VERSION, "commit": tool.DEFAULT_CONTROLLER_COMMIT}
+    capabilities = subprocess.run(
+        [str(selected.path), "capabilities"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **selected.environment},
+        timeout=30,
+    )
+    assert isinstance(json.loads(capabilities.stdout), dict)
 
 
 def macho(arch):
