@@ -13,7 +13,12 @@ runtime.
 
 Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
 
-Release 0.1.5 pins ColdSnap 0.3.22 and adds native macOS controllers on AMD64
+Release 0.1.6 pins ColdSnap 0.3.23 and fixes cancellation during capsule pulls.
+The first Ctrl-C interrupts blocked provider calls while preserving cleanup;
+a second Ctrl-C forces termination and warns that remote cleanup is unconfirmed.
+See [cancellation cleanup](DEV_PREVIEW.md#cancellation-cleanup).
+
+Release 0.1.5 added native macOS controllers on AMD64
 and ARM64, rank-local startup timings, and coordinator cleanup after dedicated
 materialization. Ordinary launches default native-weight generation to `off`.
 Control-node executables remain separate from target-native CRIU and
@@ -203,7 +208,7 @@ executable (four on Linux, three on macOS) before activating the cache generatio
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.5 pins ColdSnap 0.3.22. The provider
+Plugin 0.1.6 pins ColdSnap 0.3.23. The provider
 advertises `runtime-v1` and delegates typed image/workload operations to
 `DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.5"
+__version__ = "0.1.6"
 
 import sparkrun.plugins as _plugin_api
 from sparkrun.plugins import register_cli_command, register_recipe_item
