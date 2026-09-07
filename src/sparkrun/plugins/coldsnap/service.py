@@ -37,6 +37,7 @@ from sparkrun.plugins.coldsnap.compatibility import (
     ColdSnapHardwareReceipt,
     verify_coldsnap_hosts,
 )
+from sparkrun.plugins.coldsnap.controller_process import run_controller
 from sparkrun.plugins.coldsnap.host_provider import ColdSnapHostProvider
 from sparkrun.plugins.coldsnap.target_tools import prepare_target_tools
 from sparkrun.plugins.coldsnap.local_overlays import (
@@ -210,7 +211,7 @@ class ColdSnapService:
         self,
         binary: str = "",
         *,
-        run_command: RunCommand = subprocess.run,
+        run_command: RunCommand = run_controller,
         tool_resolver: ToolResolver = ensure_controller_tool,
         host_provider_factory=ColdSnapHostProvider,
         target_tool_resolver=prepare_target_tools,

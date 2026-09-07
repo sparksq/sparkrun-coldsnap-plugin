@@ -264,6 +264,29 @@ using a materialized recovery-only residual overlay; explicit `native` uses
 the portable capsule instead. See the SGLang section below for its paired-state
 requirements and recovery-only option.
 
+## Cancellation cleanup
+
+On cancellation, the plugin keeps the host-provider socket and transport
+session alive while the controller/adapter clean up their own coordinator,
+endpoint files, and failed/temporary serving containers. The controller tree
+runs in a separate process group so manager-only and terminal-group interrupts
+both reach it through the same shutdown path. Successful ordinary launches
+continue serving; cancellation does not delete reusable native packs, residual
+overlays, or capsules.
+
+The controller allows its adapter up to four minutes for remote teardown and
+capture-path ownership repair. The plugin allows five minutes before forcing
+termination and closing the provider. Repeated SIGINT/SIGTERM during this
+bounded wait do not abort cleanup. Timeouts/forced termination are reported
+as cleanup unconfirmed, and cleanup failures include the exact resource and
+host rather than silently reporting success. SIGKILL, manager crashes, or
+unreachable hosts can still require manual operation-scoped recovery.
+
+This needs the corresponding controller and plugin changes together; an older
+controller can kill its adapter before remote cleanup runs. A normal Sparkrun
+serving-container stop alone does not include ColdSnap's operation-specific
+coordinator. See the [controller ownership contract](https://github.com/sparksq/coldsnap/blob/main/docs/operator-integration.md#cancellation-and-coordinator-ownership).
+
 ## Explicit SGLang materialization (since 0.1.2)
 
 Plugin 0.1.2 adds `materialize` support for SGLang on n580 and n610;
