@@ -276,11 +276,22 @@ overlays, or capsules.
 
 The controller allows its adapter up to four minutes for remote teardown and
 capture-path ownership repair. The plugin allows five minutes before forcing
-termination and closing the provider. Repeated SIGINT/SIGTERM during this
-bounded wait do not abort cleanup. Timeouts/forced termination are reported
+termination and closing the provider. In the current development revision,
+the first Ctrl-C requests graceful cancellation; a second Ctrl-C (or repeated
+SIGTERM) forces the controller process group to terminate immediately instead
+of waiting out that grace. The cancellation message explains this escape hatch.
+Timeouts/forced termination are reported
 as cleanup unconfirmed, and cleanup failures include the exact resource and
 host rather than silently reporting success. SIGKILL, manager crashes, or
 unreachable hosts can still require manual operation-scoped recovery.
+
+The matching controller development revision also interrupts in-flight
+host-provider reads/writes when their context is cancelled. This lets a capsule
+pull stop waiting promptly without closing the provider needed for cleanup.
+These two cancellation fixes are not included in plugin 0.1.5 / ColdSnap 0.3.22.
+Closing the transport terminates its local Docker/SSH clients; it does not
+delete downloaded layers or guarantee that a remote Docker daemon immediately
+stops all transfer activity.
 
 This needs the corresponding controller and plugin changes together; an older
 controller can kill its adapter before remote cleanup runs. A normal Sparkrun

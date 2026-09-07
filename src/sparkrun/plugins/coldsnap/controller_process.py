@@ -23,16 +23,16 @@ SHUTDOWN_GRACE_SECONDS = 300
 
 
 @contextmanager
-def _shutdown_signals(*, ignore=False):
-    """Turn manager SIGTERM into unwinding; shield bounded cleanup from repeats."""
+def _shutdown_signals(*, on_repeat=None):
+    """Unwind on SIGTERM; allow explicit escalation during graceful cleanup."""
     previous = {}
 
     def terminate(signum, _frame):
         raise SystemExit(128 + signum)
 
     if threading.current_thread() is threading.main_thread():
-        for signum in (signal.SIGINT, signal.SIGTERM) if ignore else (signal.SIGTERM,):
-            previous[signum] = signal.signal(signum, signal.SIG_IGN if ignore else terminate)
+        for signum in (signal.SIGINT, signal.SIGTERM) if on_repeat is not None else (signal.SIGTERM,):
+            previous[signum] = signal.signal(signum, on_repeat if on_repeat is not None else terminate)
     try:
         yield
     finally:
@@ -68,8 +68,23 @@ def run_controller(arguments, *, input, text, check, capture_output, env):
         try:
             stdout, stderr = process.communicate(input)
         except BaseException as failure:
-            with _shutdown_signals(ignore=True):
-                logger.warning("ColdSnap: cancelling controller; waiting for operation-owned workload and coordinator cleanup")
+            forced = False
+
+            def force_shutdown(_signum, _frame, *, interrupted=failure):
+                nonlocal forced
+                if forced:
+                    return
+                forced = True
+                message = "ColdSnap: forcing controller termination; remote cleanup is unconfirmed and may require manual recovery"
+                interrupted.add_note(message)
+                logger.error(message)
+                _signal_group(process, signal.SIGKILL)
+
+            with _shutdown_signals(on_repeat=force_shutdown):
+                logger.warning(
+                    "ColdSnap: cancelling controller; waiting for operation-owned workload and coordinator cleanup. "
+                    "Press Ctrl-C again to force termination (remote cleanup may be incomplete)."
+                )
                 try:
                     _signal_group(process, signal.SIGTERM)
                     # communicate's single-pipe fast path closes stdin before
