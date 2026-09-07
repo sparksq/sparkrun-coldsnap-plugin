@@ -20,7 +20,6 @@ not treat successful qualification as a service-level or performance guarantee.
 
 - A Linux control machine with Git and
   [uv](https://docs.astral.sh/uv/) installed.
-- SSH access to `git@github.com:sparksq/sparkrun-coldsnap-plugin.git`.
 - A working sparkrun cluster definition or explicit target hosts.
 - NVIDIA driver 580 or newer on the target hosts.
 - Docker and enough local disk and network capacity for model data, runtime
@@ -48,7 +47,7 @@ and native-pack verification; no manual Docker platform override is required.
 ## Install the preview
 
 ```bash
-git clone git@github.com:sparksq/sparkrun-coldsnap-plugin.git
+git clone https://github.com/sparksq/sparkrun-coldsnap-plugin.git
 cd sparkrun-coldsnap-plugin
 export SPARKRUN_BRANCH=develop-next
 source dev.sh
