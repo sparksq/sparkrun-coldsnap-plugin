@@ -28,30 +28,10 @@ jobs:
         run: |
           uv venv --python 3.12 .venv
           uv pip install --python .venv/bin/python -e . --group dev 'sparkrun==0.3.7'
-      - name: Read the exact core source pin
-        id: core
-        run: |
-          .venv/bin/python - <<'PY'
-          import ast, os
-          from pathlib import Path
-          tree = ast.parse(Path('src/sparkrun/plugins/coldsnap/tool.py').read_text())
-          commit = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
-              and any(isinstance(target, ast.Name) and target.id == 'DEFAULT_CONTROLLER_COMMIT' for target in node.targets))
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('commit=' + commit + '\n')
-          PY
-      - uses: actions/checkout@v6
-        with:
-          repository: sparksq/coldsnap
-          ref: ${{ steps.core.outputs.commit }}
-          path: core-source
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: core-source/go.mod
+      # Core has its own native macOS suite. Keep this workflow independent of
+      # cross-repository credentials while either source repository is private.
       - name: Test native provider IPC, acquisition and cancellation
         env:
-          COLDSNAP_SOURCE_ROOT: ${{ github.workspace }}/core-source
           PYTHONDONTWRITEBYTECODE: '1'
           TMPDIR: /tmp
         run: .venv/bin/python -m pytest -v -p no:cacheprovider tests
