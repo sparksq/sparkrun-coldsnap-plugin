@@ -63,6 +63,16 @@ _BINARIES = (
     "coldsnap-sglang-adapter",
     "coldsnap-criu-rpc",
 )
+
+
+def _binaries(os_name: str) -> tuple[str, ...]:
+    if os_name == "linux":
+        return _BINARIES
+    if os_name == "darwin":
+        return _BINARIES[:-1]  # CRIU is executed only on Linux targets.
+    raise ColdSnapToolError("ColdSnap controllers support Linux and macOS, not %s" % os_name)
+
+
 _GO_CRIU_REPOSITORY = "https://github.com/sparksq/go-criu.git"
 _GO_CRIU_COMMIT = "29a4f2f8e8374d38319a9851d9c1ef880dd0a0e8"
 _SOURCE_BUILD_TIMEOUT = 15 * 60
@@ -112,8 +122,7 @@ class ControllerTool:
 
 def _platform() -> tuple[str, str]:
     os_name = platform.system().lower()
-    if os_name != "linux":
-        raise ColdSnapToolError("ColdSnap controller releases currently support Linux only, not %s" % os_name)
+    _binaries(os_name)
     machine = platform.machine().lower()
     if machine in {"x86_64", "amd64"}:
         return os_name, "amd64"
@@ -164,6 +173,8 @@ def _resolve_explicit(path: str, version: str) -> ControllerTool:
             sglang_adapter = Path(on_path)
     if not sglang_adapter.is_file() or not os.access(sglang_adapter, os.X_OK):
         raise ColdSnapToolError("ColdSnap SGLang adapter is not beside %s and is not on PATH" % controller)
+    if _platform()[0] == "darwin":
+        return ControllerTool(controller, adapter, version, "config", sglang_adapter)
     criu_rpc = controller.with_name("coldsnap-criu-rpc")
     if not criu_rpc.is_file() or not os.access(criu_rpc, os.X_OK):
         on_path = shutil.which("coldsnap-criu-rpc")
@@ -186,7 +197,7 @@ def explicit_controller_environment(path: str) -> dict[str, str]:
         if adapter.is_file() and os.access(adapter, os.X_OK):
             environment["COLDSNAP_%s_ADAPTER" % engine.upper()] = str(adapter)
     criu_rpc = controller.with_name("coldsnap-criu-rpc")
-    if criu_rpc.is_file() and os.access(criu_rpc, os.X_OK):
+    if _platform()[0] == "linux" and criu_rpc.is_file() and os.access(criu_rpc, os.X_OK):
         environment["COLDSNAP_CRIU_RPC"] = str(criu_rpc)
     return environment
 
@@ -312,25 +323,42 @@ def _atomic_write(path: Path, payload: bytes, mode: int) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _verify_cached(root: Path, version: str, commit: str, *, target_arch: str = "") -> ControllerTool | None:
+def _verify_cached(
+    root: Path,
+    version: str,
+    commit: str,
+    *,
+    target_arch: str = "",
+    controller_platform: tuple[str, str] | None = None,
+) -> ControllerTool | None:
     manifest_path = root / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if manifest.get("version") != version or manifest.get("commit") != commit or manifest.get("format") != 1:
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("version") != version
+        or manifest.get("commit") != commit
+        or manifest.get("format") != 1
+    ):
         return None
-    if target_arch and manifest.get("platform") != "linux-" + target_arch:
+    os_name, arch = ("linux", target_arch) if target_arch else (controller_platform or _platform())
+    if manifest.get("platform") != "%s-%s" % (os_name, arch):
         return None
-    for name in _BINARIES:
+    binaries = _binaries(os_name)
+    hashes = manifest.get("sha256")
+    if not isinstance(hashes, dict) or set(hashes) != set(binaries):
+        return None
+    for name in binaries:
         path = root / name
-        expected = manifest.get("sha256", {}).get(name)
-        if not path.is_file() or not isinstance(expected, str) or _file_sha256(path) != expected:
+        expected = hashes.get(name)
+        if path.is_symlink() or not path.is_file() or not isinstance(expected, str) or _file_sha256(path) != expected:
             return None
     controller = root / "coldsnap"
     adapter = root / "coldsnap-vllm-adapter"
     sglang_adapter = root / "coldsnap-sglang-adapter"
-    criu_rpc = root / "coldsnap-criu-rpc"
+    criu_rpc = root / "coldsnap-criu-rpc" if os_name == "linux" else None
     if target_arch:
         try:
             for name in _BINARIES:
@@ -340,15 +368,17 @@ def _verify_cached(root: Path, version: str, commit: str, *, target_arch: str = 
         # This bundle is data on the controller. Its release/hash/ELF identity
         # is checked here; the adapter verifies its running identity on target.
         return ControllerTool(controller, adapter, version, "cache", sglang_adapter, criu_rpc)
+    if os_name == "darwin":
+        try:
+            for name in binaries:
+                verify_macos_executable(root / name, arch)
+        except ColdSnapToolError:
+            return None
+    selected = ControllerTool(controller, adapter, version, "cache", sglang_adapter, criu_rpc)
     try:
         result = subprocess.run(
             [str(controller), "version", "--json"],
-            env={
-                **os.environ,
-                "COLDSNAP_VLLM_ADAPTER": str(adapter),
-                "COLDSNAP_SGLANG_ADAPTER": str(sglang_adapter),
-                "COLDSNAP_CRIU_RPC": str(criu_rpc),
-            },
+            env={**os.environ, **selected.environment},
             check=False,
             capture_output=True,
             text=True,
@@ -357,9 +387,25 @@ def _verify_cached(root: Path, version: str, commit: str, *, target_arch: str = 
         identity = json.loads(result.stdout)
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return None
-    if result.returncode != 0 or identity.get("version") != version or identity.get("commit") != commit:
+    if result.returncode != 0 or not isinstance(identity, dict) or identity.get("version") != version or identity.get("commit") != commit:
         return None
-    return ControllerTool(controller, adapter, version, "cache", sglang_adapter, criu_rpc)
+    return selected
+
+
+def verify_macos_executable(path: Path, arch: str) -> None:
+    """Admit only a native 64-bit Mach-O executable for the requested CPU."""
+    expected = {"amd64": 0x01000007, "arm64": 0x0100000C}.get(arch)
+    with path.open("rb") as stream:
+        header = stream.read(32)
+    if (
+        expected is None
+        or len(header) != 32
+        or header[:4] != b"\xcf\xfa\xed\xfe"
+        or int.from_bytes(header[4:8], "little") != expected
+        or int.from_bytes(header[12:16], "little") != 2
+        or not os.access(path, os.X_OK)
+    ):
+        raise ColdSnapToolError("Controller %s is not an executable macOS/%s Mach-O binary" % (path, arch))
 
 
 def verify_target_elf(path: Path, arch: str) -> None:
@@ -372,10 +418,13 @@ def verify_target_elf(path: Path, arch: str) -> None:
             header = stream.read(64)
     except OSError as error:
         raise ColdSnapToolError("Cannot read target helper %s: %s" % (path, error)) from error
-    if (len(header) != 64 or header[:7] != b"\x7fELF\x02\x01\x01"
-            or int.from_bytes(header[16:18], "little") not in {2, 3}
-            or int.from_bytes(header[18:20], "little") != expected
-            or not os.access(path, os.X_OK)):
+    if (
+        len(header) != 64
+        or header[:7] != b"\x7fELF\x02\x01\x01"
+        or int.from_bytes(header[16:18], "little") not in {2, 3}
+        or int.from_bytes(header[18:20], "little") != expected
+        or not os.access(path, os.X_OK)
+    ):
         raise ColdSnapToolError("Target helper %s is not an executable Linux/%s ELF binary" % (path, arch))
 
 
@@ -451,14 +500,15 @@ def _build_controller_binaries_with_docker(
         'go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap ./cmd/coldsnap\n'
         'go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-vllm-adapter ./cmd/coldsnap-vllm-adapter\n'
         'go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-sglang-adapter ./cmd/coldsnap-sglang-adapter\n'
-        '(cd cmd/coldsnap-criu-rpc && go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-criu-rpc .)\n'
     )
+    if os_name == "linux":
+        build_script += '(cd cmd/coldsnap-criu-rpc && go build -trimpath -ldflags "$ldflags" -o /work/out/coldsnap-criu-rpc .)\n'
     command = [
         docker,
         "run",
         "--rm",
         "--platform",
-        "%s/%s" % _platform(),
+        "linux/%s" % _platform()[1],
         "--pull",
         "missing",
         "--user",
@@ -498,7 +548,7 @@ def _build_controller_binaries_with_docker(
         raise ColdSnapToolError("Dockerized ColdSnap controller build failed: %s" % error) from error
     if result.returncode != 0:
         raise ColdSnapToolError("Dockerized ColdSnap controller build failed: %s" % _command_detail(result))
-    missing = [name for name in _BINARIES if not (output / name).is_file()]
+    missing = [name for name in _binaries(os_name) if not (output / name).is_file()]
     if missing:
         raise ColdSnapToolError("Dockerized ColdSnap controller build did not produce: %s" % ", ".join(missing))
     return go_version, builder_image
@@ -524,11 +574,12 @@ def install_controller_tool_from_ssh(
         source = workspace / "source"
         output = workspace / "out"
         remote = _clone_pinned_source(source, repository, version, commit)
-        _clone_pinned_go_criu(source / "build" / "sources" / "go-criu")
+        if os_name == "linux":
+            _clone_pinned_go_criu(source / "build" / "sources" / "go-criu")
         go_version, builder_image = _build_controller_binaries_with_docker(source, output, version, commit, os_name, arch)
         root = _cache_path(cache_dir, version, os_name, arch)
         binary_digests: dict[str, str] = {}
-        for name in _BINARIES:
+        for name in _binaries(os_name):
             payload = (output / name).read_bytes()
             binary_digests[name] = hashlib.sha256(payload).hexdigest()
             _atomic_write(
@@ -556,7 +607,9 @@ def install_controller_tool_from_ssh(
             (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
         )
-    resolved = _verify_cached(root, version, commit, **({"target_arch": arch} if target_tools else {}))
+    resolved = _verify_cached(
+        root, version, commit, **({"target_arch": arch} if target_tools else {"controller_platform": (os_name, arch)})
+    )
     if resolved is None:
         raise ColdSnapToolError("Source-built ColdSnap controller v%s failed identity verification" % version)
     return ControllerTool(
@@ -592,7 +645,7 @@ def install_controller_tool(
     checksums = fetch(checksum_url)
     payloads: dict[str, bytes] = {}
     archive_digests: dict[str, str] = {}
-    for name in _BINARIES:
+    for name in _binaries(os_name):
         archive_name = "%s_%s_%s_%s.tar.gz" % (name, version, os_name, arch)
         url = assets.get(archive_name)
         if not url:
@@ -626,7 +679,9 @@ def install_controller_tool(
         (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
         stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
     )
-    resolved = _verify_cached(root, version, commit, **({"target_arch": arch} if target_tools else {}))
+    resolved = _verify_cached(
+        root, version, commit, **({"target_arch": arch} if target_tools else {"controller_platform": (os_name, arch)})
+    )
     if resolved is None:
         raise ColdSnapToolError("Installed ColdSnap controller v%s failed identity verification" % version)
     return ControllerTool(
@@ -664,7 +719,8 @@ def _read_oci_bundle(root: Path, version: str, commit: str, os_name: str, arch: 
         raise ColdSnapToolError("ColdSnap OCI binary-bundle manifest is invalid: %s" % error) from error
     expected_platform = "%s-%s" % (os_name, arch)
     if (
-        manifest.get("format") != 1
+        not isinstance(manifest, dict)
+        or manifest.get("format") != 1
         or manifest.get("kind") != _OCI_BUNDLE_KIND
         or manifest.get("version") != version
         or manifest.get("commit") != commit
@@ -672,10 +728,10 @@ def _read_oci_bundle(root: Path, version: str, commit: str, os_name: str, arch: 
     ):
         raise ColdSnapToolError("ColdSnap OCI binary bundle does not match release v%s at %s for %s" % (version, commit, expected_platform))
     hashes = manifest.get("sha256")
-    if not isinstance(hashes, dict) or set(hashes) != set(_BINARIES):
+    if not isinstance(hashes, dict) or set(hashes) != set(_binaries(os_name)):
         raise ColdSnapToolError("ColdSnap OCI binary-bundle hash inventory is invalid")
     payloads: dict[str, bytes] = {}
-    for name in _BINARIES:
+    for name in _binaries(os_name):
         path = root / name
         expected = hashes.get(name)
         if path.is_symlink() or not path.is_file() or not isinstance(expected, str) or not _SHA256.fullmatch(expected):
@@ -688,23 +744,12 @@ def _read_oci_bundle(root: Path, version: str, commit: str, os_name: str, arch: 
     return payloads
 
 
-def install_controller_tool_from_oci(
-    cache_dir: str | Path,
-    version: str,
-    repository: str,
-    oci_repository: str,
-    os_name: str,
-    arch: str,
-    *,
-    commit: str = DEFAULT_CONTROLLER_COMMIT,
-    target_tools: bool = False,
-) -> ControllerTool:
-    """Install one architecture-matched, manifest-verified OCI binary bundle."""
+def _extract_oci_with_docker(oci_repository: str, version: str, arch: str, bundle: Path) -> str:
     docker = shutil.which("docker")
     if not docker:
         raise ColdSnapToolError("ColdSnap OCI binary-bundle fallback requires docker")
     image = "%s:%s" % (oci_repository, version)
-    platform_name = "%s/%s" % (os_name, arch)
+    platform_name = "linux/%s" % arch
     logger.log(PROGRESS, "ColdSnap: pulling controller binary bundle %s for %s", image, platform_name)
     with progress_heartbeat(logger, "ColdSnap: pulling controller binary bundle"):
         _docker_command([docker, "pull", "--platform", platform_name, image])
@@ -726,20 +771,48 @@ def install_controller_tool_from_oci(
     if not resolved:
         raise ColdSnapToolError("ColdSnap OCI binary bundle has no immutable repository digest")
 
+    created = _docker_command([docker, "create", "--platform", platform_name, resolved])
+    container = created.stdout.strip()
+    if not container or any(character.isspace() for character in container):
+        raise ColdSnapToolError("ColdSnap OCI binary bundle returned an invalid container ID")
+    try:
+        _docker_command([docker, "cp", "%s:%s/." % (container, _OCI_BUNDLE_ROOT), str(bundle)])
+    finally:
+        try:
+            _docker_command([docker, "rm", "-f", container], timeout=30)
+        except ColdSnapToolError:
+            logger.warning("ColdSnap: could not remove temporary binary-bundle container %s", container)
+    return resolved
+
+
+def install_controller_tool_from_oci(
+    cache_dir: str | Path,
+    version: str,
+    repository: str,
+    oci_repository: str,
+    os_name: str,
+    arch: str,
+    *,
+    commit: str = DEFAULT_CONTROLLER_COMMIT,
+    target_tools: bool = False,
+) -> ControllerTool:
+    """Install one architecture-matched, manifest-verified OCI binary bundle."""
+    _binaries(os_name)
+    image = "%s:%s" % (oci_repository, version)
     with tempfile.TemporaryDirectory(prefix="sparkrun-coldsnap-oci-") as temporary:
         bundle = Path(temporary) / "bundle"
         bundle.mkdir()
-        created = _docker_command([docker, "create", "--platform", platform_name, resolved])
-        container = created.stdout.strip()
-        if not container or any(character.isspace() for character in container):
-            raise ColdSnapToolError("ColdSnap OCI binary bundle returned an invalid container ID")
-        try:
-            _docker_command([docker, "cp", "%s:%s/." % (container, _OCI_BUNDLE_ROOT), str(bundle)])
-        finally:
+        if os_name == "darwin":
+            from sparkrun.plugins.coldsnap.oci_bundle import OCIBundleError, fetch_binary_bundle
+
+            logger.log(PROGRESS, "ColdSnap: downloading OCI controller bundle %s for %s/%s", image, os_name, arch)
             try:
-                _docker_command([docker, "rm", "-f", container], timeout=30)
-            except ColdSnapToolError:
-                logger.warning("ColdSnap: could not remove temporary binary-bundle container %s", container)
+                with progress_heartbeat(logger, "ColdSnap: downloading OCI controller bundle"):
+                    resolved = fetch_binary_bundle(oci_repository, version, os_name, arch, bundle)
+            except (OCIBundleError, OSError, ValueError, tarfile.TarError) as error:
+                raise ColdSnapToolError("ColdSnap OCI bundle download failed: %s" % error) from error
+        else:
+            resolved = _extract_oci_with_docker(oci_repository, version, arch, bundle)
         payloads = _read_oci_bundle(bundle, version, commit, os_name, arch)
         root = _cache_path(cache_dir, version, os_name, arch)
         binary_digests: dict[str, str] = {}
@@ -765,7 +838,9 @@ def install_controller_tool_from_oci(
             (json.dumps(cache_manifest, indent=2, sort_keys=True) + "\n").encode(),
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
         )
-    installed = _verify_cached(root, version, commit, **({"target_arch": arch} if target_tools else {}))
+    installed = _verify_cached(
+        root, version, commit, **({"target_arch": arch} if target_tools else {"controller_platform": (os_name, arch)})
+    )
     if installed is None:
         raise ColdSnapToolError("OCI-installed ColdSnap controller v%s failed identity verification" % version)
     return ControllerTool(
@@ -798,12 +873,14 @@ def _ensure_tool(config: Any, *, target_arch: str = "") -> ControllerTool:
                 if verified is None:
                     raise ColdSnapToolError("Configured controller.target_path is not a verified target binary bundle")
                 return verified
-            if target_arch != _platform()[1]:
-                raise ColdSnapToolError("Cross-architecture development controllers require controller.target_path with a release-matched target bundle")
+            if ("linux", target_arch) != _platform():
+                raise ColdSnapToolError(
+                    "Cross-platform development controllers require controller.target_path with a release-matched Linux target bundle"
+                )
         return _resolve_explicit(configured_path, version)
     os_name, arch = ("linux", target_arch) if target_arch else _platform()
     root = _cache_path(config.cache_dir, version, os_name, arch)
-    cached = _verify_cached(root, version, commit, **({"target_arch": arch} if target_arch else {}))
+    cached = _verify_cached(root, version, commit, **({"target_arch": arch} if target_arch else {"controller_platform": (os_name, arch)}))
     if cached is not None:
         return cached
     if not allow_download:
@@ -834,7 +911,9 @@ def _ensure_tool(config: Any, *, target_arch: str = "") -> ControllerTool:
                 "ColdSnap: OCI binary-bundle acquisition failed; using temporary pinned Git source-build fallback",
             )
             try:
-                return install_controller_tool_from_ssh(config.cache_dir, version, repository, os_name, arch, commit=commit, **install_options)
+                return install_controller_tool_from_ssh(
+                    config.cache_dir, version, repository, os_name, arch, commit=commit, **install_options
+                )
             except ColdSnapToolError as build_error:
                 raise ColdSnapToolError(
                     "GitHub release acquisition failed: %s OCI binary-bundle acquisition failed: %s "

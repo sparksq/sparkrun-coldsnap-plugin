@@ -91,6 +91,22 @@ def _rpc(provider, **values):
     return json.loads(payload)
 
 
+def test_provider_socket_fits_even_with_a_long_macos_tmpdir(tmp_path, monkeypatch):
+    import tempfile
+
+    long_directory = tmp_path / ("macos-private-temp-" * 8)
+    long_directory.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(long_directory))
+    session = _Session()
+    with ColdSnapHostProvider(_request(), sctx=_context(), session_factory=lambda *a, **kw: session) as provider:
+        assert len(os.fsencode(provider.socket)) < 104
+        assert provider.socket.parent.stat().st_mode & 0o777 == 0o700
+        assert provider.socket.stat().st_mode & 0o777 == 0o600
+        assert _rpc(provider, operation="exec", host="node-a", arguments=["true"])["ok"]
+        directory = provider.socket.parent
+    assert session.closed and not directory.exists()
+
+
 def test_provider_round_trips_exact_argv_input_and_exit_status():
     session = _Session()
     with ColdSnapHostProvider(

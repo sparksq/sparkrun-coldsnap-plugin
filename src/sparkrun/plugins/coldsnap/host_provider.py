@@ -176,7 +176,9 @@ class ColdSnapHostProvider:
             raise RuntimeError("ColdSnap host-provider capabilities are invalid")
         self.capabilities = tuple(dict.fromkeys(selected_capabilities))
         self.token = secrets.token_urlsafe(32)
-        self._directory = Path(tempfile.mkdtemp(prefix="sparkrun-coldsnap-provider-"))
+        # macOS TMPDIR can leave too little room for a Unix socket (104 bytes).
+        # A short, randomly named 0700 directory preserves the private boundary.
+        self._directory = Path(tempfile.mkdtemp(prefix="coldsnap-", dir="/tmp"))
         self.socket = self._directory / "provider.sock"
         self._closed = False
         self._metrics_lock = Lock()

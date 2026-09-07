@@ -52,12 +52,14 @@ def prepare_target_tools(*, hosts, engine, cluster, sctx, binary="") -> TargetTo
     if binary:
         verifier = os.environ.get("COLDSNAP_TARGET_PAYLOAD_VERIFIER", "")
         criu_rpc = os.environ.get("COLDSNAP_TARGET_CRIU_RPC", "")
-        if not verifier and not criu_rpc and arch == _platform()[1]:
+        if not verifier and not criu_rpc and ("linux", arch) == _platform():
             environment = explicit_controller_environment(binary)
             verifier = environment.get("COLDSNAP_%s_ADAPTER" % engine.upper(), "")
             criu_rpc = environment.get("COLDSNAP_CRIU_RPC", "")
         if not verifier or not criu_rpc:
-            raise ColdSnapToolError("Development controller requires release-matched COLDSNAP_TARGET_PAYLOAD_VERIFIER and COLDSNAP_TARGET_CRIU_RPC")
+            raise ColdSnapToolError(
+                "Development controller requires release-matched COLDSNAP_TARGET_PAYLOAD_VERIFIER and COLDSNAP_TARGET_CRIU_RPC"
+            )
         selected = TargetTools(arch, Path(verifier), Path(criu_rpc))
     else:
         tool = ensure_target_tool(sctx.config, arch)

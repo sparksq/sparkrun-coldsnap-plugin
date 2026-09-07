@@ -173,7 +173,7 @@ def test_ensure_controller_falls_back_to_oci_before_source_build(tmp_path, monke
     expected = ControllerTool(tmp_path / "coldsnap", tmp_path / "adapter", VERSION, "oci", tmp_path / "sglang")
     calls = []
     monkeypatch.setattr(coldsnap_tool, "_platform", lambda: ("linux", "amd64"))
-    monkeypatch.setattr(coldsnap_tool, "_verify_cached", lambda *_args: None)
+    monkeypatch.setattr(coldsnap_tool, "_verify_cached", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         coldsnap_tool,
         "install_controller_tool",
@@ -201,7 +201,7 @@ def test_ensure_controller_falls_back_to_source_when_release_and_oci_fail(tmp_pa
     expected = ControllerTool(tmp_path / "coldsnap", tmp_path / "adapter", VERSION, "git-build", tmp_path / "sglang")
     calls = []
     monkeypatch.setattr(coldsnap_tool, "_platform", lambda: ("linux", "amd64"))
-    monkeypatch.setattr(coldsnap_tool, "_verify_cached", lambda *_args: None)
+    monkeypatch.setattr(coldsnap_tool, "_verify_cached", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         coldsnap_tool,
         "install_controller_tool",
@@ -394,7 +394,7 @@ def test_temporary_source_build_uses_pinned_dockerized_go_toolchain(tmp_path, mo
 
     command = seen[0]
     assert command[:3] == ["/usr/bin/docker", "run", "--rm"]
-    assert command[command.index("--platform") + 1] == "%s/%s" % coldsnap_tool._platform()
+    assert command[command.index("--platform") + 1] == "linux/%s" % coldsnap_tool._platform()[1]
     assert go_version == GO_VERSION
     assert builder_image == GO_BUILDER_IMAGE
     assert GO_BUILDER_IMAGE in command
@@ -412,7 +412,8 @@ def test_source_build_toolchain_rejects_go_mod_builder_mismatch(tmp_path):
         _source_build_toolchain(source)
 
 
-def test_configured_controller_requires_and_exports_sibling_adapter(tmp_path):
+def test_configured_controller_requires_and_exports_sibling_adapter(tmp_path, monkeypatch):
+    monkeypatch.setattr(coldsnap_tool, "_platform", lambda: ("linux", "amd64"))
     controller = tmp_path / "coldsnap"
     adapter = tmp_path / "coldsnap-vllm-adapter"
     sglang_adapter = tmp_path / "coldsnap-sglang-adapter"

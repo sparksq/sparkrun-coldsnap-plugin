@@ -67,7 +67,7 @@ def test_release_reuses_the_complete_test_matrix_and_limits_write_access():
     assert release["permissions"] == {"contents": "read"}
     assert release["jobs"]["tests"]["uses"] == "./.github/workflows/test-python.yml"
     publish = release["jobs"]["github-release"]
-    assert set(publish["needs"]) == {"tests", "build"}
+    assert set(publish["needs"]) == {"tests", "macos-tests", "build"}
     assert publish["if"] == "github.ref_type == 'tag'"
     assert publish["permissions"] == {"contents": "write"}
     assert "permissions" not in release["jobs"]["build"]
@@ -81,11 +81,7 @@ def test_release_reuses_the_complete_test_matrix_and_limits_write_access():
 @pytest.mark.parametrize("tag", ["v0.1.1", "v0.1.0", "v0.3.20", "0.1.1", "v0.1.1-extra"])
 def test_release_tag_gate_rejects_mismatched_versions(tmp_path: Path, tag: str):
     workflow = _workflow("release.yml")
-    script = next(
-        step["run"]
-        for step in workflow["jobs"]["build"]["steps"]
-        if step.get("name") == "Compare tag against versions.yaml"
-    )
+    script = next(step["run"] for step in workflow["jobs"]["build"]["steps"] if step.get("name") == "Compare tag against versions.yaml")
     # Execute the actual workflow's shell gate, without fetching repo-tools.
     # The fake version command has no side effects and verifies its arguments.
     fake_python = tmp_path / "python"

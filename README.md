@@ -240,6 +240,35 @@ and do not request GPUs or publish images.
 
 ## Cross-architecture controllers (since 0.1.3)
 
+### Control-node platforms
+
+The current source supports Linux and macOS control nodes on AMD64 and ARM64;
+the older releases described below remain Linux-only. GPU targets must remain
+qualified Linux hosts. Native Windows controllers are not supported.
+
+The managed controller and its two engine adapters are native to the control
+node. macOS installs no local CRIU executable; the plugin separately acquires
+Linux CRIU and payload-verifier tools for the targets, including when both the
+Mac and the targets are ARM64.
+
+GitHub release assets are tried first. The second source is the same
+`docker.io/scitrera/coldsnap-binaries:<version>` index for all four platforms:
+`linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`. macOS payloads
+are downloaded directly through the registry API, not through a Linux container.
+This path needs neither Docker nor ORAS; it verifies descriptor digests, platform,
+release identity, file hashes, and Mach-O architecture. It supports anonymous
+public pulls and existing Docker credentials for authenticated pulls.
+
+Other operations, such as capsule-descriptor extraction and the final pinned
+source-build fallback, still use Docker. On macOS those require a working Linux
+Docker engine (for example Docker Desktop), plus the normal Sparkrun Git/SSH
+and file-transfer tools. Runtime builds remain on the Linux GPU head. The source
+fallback uses a Linux Go builder with `GOOS=darwin`, not a Darwin container.
+An explicit development controller needs a separate verified Linux target bundle
+or the two `COLDSNAP_TARGET_*` overrides; it cannot reuse Mac sibling binaries.
+
+### Earlier Linux cross-architecture fixes
+
 Plugin 0.1.3 includes the Docker/Git retrieval fixes below; 0.1.4 with ColdSnap
 0.3.21 additionally fixes the target activation helpers. Linux x64 control nodes
 can manage ARM64 Spark clusters; the two machines do not need the same CPU
@@ -247,7 +276,7 @@ architecture. Version 0.1.3 alone is not sufficient for cross-architecture captu
 
 | Resource | Platform used |
 | --- | --- |
-| Controller tools | Control-node platform, such as `linux/amd64` |
+| Controller tools | Native control-node platform, such as `linux/amd64` or `darwin/arm64` |
 | Remotely executed CRIU helper and payload verifier | Target platform, such as `linux/arm64` |
 | Capture/runtime/NCCL images | Target Docker platform, such as `linux/arm64` |
 | Descriptor-only OCI image | Its declared image platform; only `create`/`cp`, never execution |

@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Fox Engine Ltd
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: macOS controller integration
+on:
+  push:
+    branches: ['main', 'feature/**', 'release/**']
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  macos:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v9.0.0
+      - name: Create native Python environment
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python -e . --group dev 'sparkrun==0.3.7'
+      - name: Read the exact core source pin
+        id: core
+        run: |
+          .venv/bin/python - <<'PY'
+          import ast, os
+          from pathlib import Path
+          tree = ast.parse(Path('src/sparkrun/plugins/coldsnap/tool.py').read_text())
+          commit = next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == 'DEFAULT_CONTROLLER_COMMIT' for target in node.targets))
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('commit=' + commit + '\n')
+          PY
+      - uses: actions/checkout@v6
+        with:
+          repository: sparksq/coldsnap
+          ref: ${{ steps.core.outputs.commit }}
+          path: core-source
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core-source/go.mod
+      - name: Test native provider IPC, acquisition and cancellation
+        env:
+          COLDSNAP_SOURCE_ROOT: ${{ github.workspace }}/core-source
+          PYTHONDONTWRITEBYTECODE: '1'
+          TMPDIR: /tmp
+        run: .venv/bin/python -m pytest -v -p no:cacheprovider tests
