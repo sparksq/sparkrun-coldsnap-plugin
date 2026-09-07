@@ -9,7 +9,7 @@ import logging
 from contextlib import contextmanager
 import json
 import subprocess
-import time
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -43,9 +43,11 @@ def _result(*, success=True, stdout="", stderr=""):
 def _stable_snapshot_driver(monkeypatch):
     monkeypatch.setattr(ColdSnapBuilder, "_detect_snapshot_driver", lambda *_args, **_kwargs: "n610")
     monkeypatch.setattr(ColdSnapBuilder, "_detect_docker_platform", lambda *_args, **_kwargs: "linux/arm64")
+
     @contextmanager
     def sources(*_args, **_kwargs):
         yield "/tmp/test-coldsnap-sources"
+
     monkeypatch.setattr(ColdSnapBuilder, "_prepared_sources", sources)
 
 
@@ -399,10 +401,19 @@ def test_builder_reports_default_progress_and_detail(caplog, monkeypatch):
     assert any("reusing cached image" in message for message in messages)
 
 
-def test_builder_progress_heartbeat_is_visible_at_default_level(caplog):
+def test_builder_progress_heartbeat_is_visible_at_default_level(caplog, monkeypatch):
+    observed = threading.Event()
+    original_emit = caplog.handler.emit
+
+    def record_heartbeat(record):
+        original_emit(record)
+        if record.name == "test.coldsnap.heartbeat" and "still running" in record.getMessage():
+            observed.set()
+
+    monkeypatch.setattr(caplog.handler, "emit", record_heartbeat)
     with caplog.at_level(PROGRESS):
         with progress_heartbeat(logging.getLogger("test.coldsnap.heartbeat"), "ColdSnap builder: test operation", interval=0.01):
-            time.sleep(0.03)
+            assert observed.wait(timeout=5), "heartbeat was not logged at the default level"
 
     assert any("still running" in record.getMessage() for record in caplog.records)
 
