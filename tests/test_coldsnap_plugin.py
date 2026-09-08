@@ -3222,3 +3222,62 @@ def test_coldsnap_recipe_rejects_sparkrun_and_runtime_owned_env():
     assert any("CUDA_CACHE_MAXSIZE" in issue for issue in issues)
     assert any("CUDA_CACHE_PATH" in issue for issue in issues)
     assert any("VLLM_CACHE_ROOT" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("wrong_job,wrong_capture", [(True, False), (False, True)])
+def test_lifecycle_service_rejects_mismatched_job_or_capture(monkeypatch, tmp_path, wrong_job, wrong_capture):
+    _recipe, options, plan, sctx = _setup()
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text(json.dumps({"kind": "coldsnap-snapshot-artifact", "capture_id": "capture"}))
+    target = "sparkrun_%s_%s" % (plan.intent_id, "d" * 12)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts", lambda *_, **__: SimpleNamespace(snapshot_driver="n610"))
+    monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *_, **__: target)
+    monkeypatch.setattr(ColdSnapService, "_invoke", lambda *_, **__: pytest.fail("mismatched lifecycle invoked controller"))
+    with pytest.raises(RuntimeError, match="different job|activation receipt"):
+        ColdSnapService().execute_lifecycle(
+            "sleep",
+            options,
+            plan=plan,
+            sctx=sctx,
+            artifact=str(artifact),
+            expected_cluster_id="other-job" if wrong_job else target,
+            expected_capture_id="other-capture" if wrong_capture else "capture",
+        )
+
+
+def test_job_control_uses_saved_recipe_and_exact_activation_receipt(monkeypatch):
+    from sparkrun.plugins.coldsnap.api import control_job
+
+    recipe, _, plan, sctx = _setup()
+    job = SimpleNamespace(
+        cluster_id="exact-job",
+        hosts=tuple(plan.host_list),
+        metadata={
+            "cluster": "lab",
+            "recipe_state": recipe.__getstate__(),
+            "port": 8111,
+            "runtime_info": {
+                "execution_strategy": "coldsnap",
+                "capture_id": "exact-capture",
+                "snapshot_driver": "n610",
+                "artifact": "/test/committed.json",
+            },
+        },
+    )
+    captured = {}
+
+    def planning(options, **kwargs):
+        assert options.dry_run and options.overrides["port"] == 8111
+        assert options.hosts == tuple(plan.host_list)
+        return plan
+
+    def execute(self, action, options, **kwargs):
+        captured.update(kwargs)
+        return {}, {"state": "sleeping", "cluster_id": "exact-job", "capture_id": "exact-capture"}
+
+    monkeypatch.setattr("sparkrun.api.plan", planning)
+    monkeypatch.setattr(ColdSnapService, "execute_lifecycle", execute)
+    assert control_job("sleep", job, sctx=sctx)["state"] == "sleeping"
+    assert captured["expected_cluster_id"] == "exact-job"
+    assert captured["expected_capture_id"] == "exact-capture"
+    assert captured["artifact"] == "/test/committed.json"

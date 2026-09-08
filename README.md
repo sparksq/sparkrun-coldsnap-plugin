@@ -337,3 +337,14 @@ materialization or GPU TTFT matrix.
 The ColdSnap plugin is licensed under the GNU Affero General Public License
 version 3 only. `LICENSE_EXCEPTION` grants an additional permission for
 combining and conveying it with sparkrun; it does not relicense the plugin.
+
+### Supervisor lifecycle API
+
+`sparkrun.plugins.coldsnap.api.control_job(operation, job, sctx=...)` supports
+`status`, `sleep`, and `wake` for an existing receipt-backed ColdSnap job.
+`LIFECYCLE_API_VERSION = 1` lets supervisors gate this integration explicitly.
+The API rebuilds a dry-run plan from the saved recipe, assigned serve port,
+parallelism, named cluster, and exact job hosts. It refuses a different live
+job ID or capture ID before invoking native lifecycle control. It never starts
+an ordinary runtime or falls back to a new launch. Supervisors must separately
+verify their ownership and drain requests before changing workload state.

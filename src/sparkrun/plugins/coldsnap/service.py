@@ -451,6 +451,7 @@ class ColdSnapService:
                 "execution_strategy": "coldsnap",
                 "weight_provider": str(activation.receipt["provider"]),
                 "capture_id": str(activation.receipt.get("capture_id") or ""),
+                "artifact": str(activation.request["artifact"]),
                 "snapshot_driver": activation.request["snapshot_driver"]["id"],
                 "lifecycle_state": activation.request.get("lifecycle", {}).get("activation_state", "running"),
                 "inference_readiness": (
@@ -676,6 +677,8 @@ class ColdSnapService:
         artifact: str = "",
         render_only: bool = False,
         snapshot_driver: str | None = None,
+        expected_cluster_id: str = "",
+        expected_capture_id: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Control one exact active ColdSnap workload selected by recipe intent."""
         if operation not in {"sleep", "wake", "status"}:
@@ -726,6 +729,8 @@ class ColdSnapService:
                     cache_dir=options.cache_dir,
                     sctx=sctx,
                 )
+        if expected_cluster_id and cluster_id != expected_cluster_id:
+            raise RuntimeError("ColdSnap lifecycle resolved a different job; refusing to control it")
         request = build_request(
             operation,
             options,
@@ -746,6 +751,8 @@ class ColdSnapService:
         expected_capture = artifact_document.get("capture_id")
         if artifact_document.get("kind") != "coldsnap-snapshot-artifact" or not isinstance(expected_capture, str) or not expected_capture:
             raise RuntimeError("ColdSnap lifecycle artifact is not a snapshot descriptor")
+        if expected_capture_id and expected_capture != expected_capture_id:
+            raise RuntimeError("ColdSnap lifecycle artifact does not match the job's activation receipt")
         completed = self._invoke(
             request,
             prepare_only=False,
