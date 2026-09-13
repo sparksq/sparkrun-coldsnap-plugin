@@ -45,7 +45,7 @@ from sparkrun.plugins.coldsnap.git_sources import clone_pinned_source
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONTROLLER_COMMIT = "ccd72ca2b26904b709914d2538d6f277b5b238ca"
+DEFAULT_CONTROLLER_COMMIT = "e7321c3705f46355fb38729eef98d0c789149a9b"
 DEFAULT_RELEASE_REPOSITORY = "sparksq/coldsnap"
 DEFAULT_BINARY_OCI_REPOSITORY = "docker.io/scitrera/coldsnap-binaries"
 _DOWNLOAD_TIMEOUT = 60

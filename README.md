@@ -13,7 +13,8 @@ runtime.
 
 Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
 
-Release 0.1.6 pins ColdSnap 0.3.23 and fixes cancellation during capsule pulls.
+Release 0.1.7 pins ColdSnap 0.3.26 with DeepSeek image compatibility, native/recovery
+hydration fixes, and validated DSpark calibration reuse for asynchronous startup.
 The first Ctrl-C interrupts blocked provider calls while preserving cleanup;
 a second Ctrl-C forces termination and warns that remote cleanup is unconfirmed.
 See [cancellation cleanup](DEV_PREVIEW.md#cancellation-cleanup).
@@ -208,7 +209,7 @@ executable (four on Linux, three on macOS) before activating the cache generatio
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.6 pins ColdSnap 0.3.23. The provider
+Plugin 0.1.7 pins ColdSnap 0.3.26. The provider
 advertises `runtime-v1` and delegates typed image/workload operations to
 `DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine
