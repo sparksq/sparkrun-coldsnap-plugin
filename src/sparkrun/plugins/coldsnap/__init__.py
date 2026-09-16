@@ -17,6 +17,8 @@ from sparkrun.plugins.coldsnap.config import ColdSnapRecipeHandler
 from sparkrun.plugins.coldsnap.service import ColdSnapExecutionStrategy
 
 
+SPARKRUN_PLUGIN_API_VERSION = 1
+
 _HANDLER = ColdSnapRecipeHandler()
 _EXECUTION_STRATEGY = ColdSnapExecutionStrategy()
 
@@ -65,4 +67,4 @@ def register(v) -> None:
     )
 
 
-__all__ = ["ColdSnapBuilder", "ColdSnapCompatibilityError", "__version__", "register"]
+__all__ = ["ColdSnapBuilder", "ColdSnapCompatibilityError", "SPARKRUN_PLUGIN_API_VERSION", "__version__", "register"]

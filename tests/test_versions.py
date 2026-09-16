@@ -25,3 +25,10 @@ def test_generated_versions_match_the_authoritative_catalog():
     assert project["project"]["version"] == plugin_version == str(versions["sparkrun-coldsnap-plugin"])
     assert DEFAULT_CONTROLLER_VERSION == str(versions["coldsnap"])
     assert "version" not in manifest
+
+
+def test_host_compatibility_range_matches_plugin_manifest():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    manifest = tomllib.loads((ROOT / "plugin.toml").read_text(encoding="utf-8"))
+    requirements = [item for item in project["project"]["dependencies"] if item.startswith("sparkrun")]
+    assert requirements == ["sparkrun" + manifest["sparkrun"]]

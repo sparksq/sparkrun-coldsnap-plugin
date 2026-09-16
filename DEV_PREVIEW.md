@@ -36,7 +36,7 @@ control node, then staged on the Spark head. Private sources require repository
 read access and working Git credentials on the control node; no GitHub keys or
 credentials are copied to the targets. For an x64 controller driving ARM64
 Spark nodes, use automatic or delegated transfer mode. See
-[cross-architecture controllers](README.md#cross-architecture-controllers-since-013)
+[cross-architecture controllers](README.md#cross-architecture-controllers)
 for platform selection, source access, and verification limits.
 
 Use plugin 0.1.4 or newer with ColdSnap 0.3.21 for an x64 controller and ARM64

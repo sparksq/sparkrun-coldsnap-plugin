@@ -14,8 +14,9 @@ import subprocess
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass
+from inspect import signature
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -98,6 +99,11 @@ def replace_capture_workload(*, plan, sctx) -> tuple[str, ...]:
     """
     from sparkrun.api._run import _evict_superseded_deployments
 
+    replacement_options = {"strict": True}
+    if "include_current" in signature(_evict_superseded_deployments).parameters:
+        # Capture submits its own containers instead of invoking the ordinary
+        # runtime's same-ID cleanup. 0.4 exposes that replacement explicitly.
+        replacement_options["include_current"] = True
     evicted, _observed = _evict_superseded_deployments(
         intent_id=plan.intent_id,
         cluster_id_for_launch=plan.cluster_id,
@@ -106,7 +112,7 @@ def replace_capture_workload(*, plan, sctx) -> tuple[str, ...]:
         cluster_def=plan.cluster,
         config=sctx.config,
         sctx=sctx,
-        strict=True,
+        **replacement_options,
     )
     if evicted:
         logger.log(PROGRESS, "ColdSnap: replaced %d active workload(s) before capture", len(evicted))
@@ -120,13 +126,18 @@ def prepare_capture_images(options, *, plan, sctx, snapshot_driver: str):
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     hosts = list(plan.host_list)
-    ssh_kwargs = build_ssh_kwargs(sctx.config)
-    if plan.cluster.user:
-        # ``distribute_from_config`` rebuilds SSH kwargs from the shared
-        # config, so keep it aligned with the already-resolved plan as
-        # ``api.run`` does before entering the launcher.
-        sctx.config.ssh_user = plan.cluster.user
-        ssh_kwargs = {**ssh_kwargs, "ssh_user": plan.cluster.user}
+    # Host 0.4 scopes connection settings per operation. Preserve that contract
+    # on older supported hosts as well, without modifying the caller's config.
+    config = sctx.config
+    if callable(getattr(config, "for_cluster", None)):
+        config = config.for_cluster(plan.cluster)
+    elif plan.cluster.user:
+        config = copy(config)
+        config.ssh_user = plan.cluster.user
+    ssh_kwargs = build_ssh_kwargs(config)
+    # Runtime hooks declare auxiliary models on the recipe. Keep those changes
+    # and legacy host image-plan updates local to this staging transaction.
+    recipe = deepcopy(plan.recipe)
     topology = options.topology or plan.cluster.topology
     requested_transfer = options.transfer_mode or plan.cluster.transfer_mode or "auto"
     transfer = resolve_auto_transfer_mode(
@@ -137,39 +148,40 @@ def prepare_capture_images(options, *, plan, sctx, snapshot_driver: str):
         topology=topology,
     )
     engine = "sglang" if plan.runtime.runtime_name == "sglang" else "vllm"
-    prepared = prepare_images(
-        plan.recipe,
-        plan.runtime,
-        hosts,
-        dict(options.overrides),
-        config=sctx.config,
-        v=getattr(sctx, "variables", None),
-        cluster=plan.cluster,
-        dry_run=False,
-        transfer_mode=transfer.mode,
-        ssh_kwargs=ssh_kwargs,
-        run_builder=True,
-        builder_context={"snapshot_driver": snapshot_driver, "engine": engine},
-    )
+    prepare_options = {
+        "config": config,
+        "v": getattr(sctx, "variables", None),
+        "cluster": plan.cluster,
+        "dry_run": False,
+        "transfer_mode": transfer.mode,
+        "ssh_kwargs": ssh_kwargs,
+        "run_builder": True,
+        "builder_context": {"snapshot_driver": snapshot_driver, "engine": engine},
+    }
+    # 0.4 removed this unused argument. Keep the supported 0.3 host contract
+    # explicit without retrying a possibly side-effecting builder on TypeError.
+    if "overrides" in signature(prepare_images).parameters:
+        prepare_options["overrides"] = dict(options.overrides)
+    prepared = prepare_images(recipe, plan.runtime, hosts, **prepare_options)
     # Capture launches the real engine rather than entering the normal
     # launcher pipeline. Run the engine's shared asset declaration hook here
     # so auxiliary models (for example SGLang/vLLM speculative drafts) join the
     # primary pinned snapshot in the same distribution transaction.
     plan.runtime.prepare(
-        plan.recipe,
+        recipe,
         hosts,
-        config=sctx.config,
+        config=config,
         dry_run=False,
         transfer_mode=transfer.mode,
         overrides=dict(options.overrides),
     )
-    cache_dir = options.cache_dir or plan.cluster.cache_dir or str(sctx.config.hf_cache_dir)
+    cache_dir = options.cache_dir or plan.cluster.cache_dir or str(config.hf_cache_dir)
     return stage_prepared_images(
         prepared,
-        plan.recipe,
+        recipe,
         hosts,
         cache_dir,
-        sctx.config,
+        config,
         dry_run=False,
         recipe_name=plan.recipe.name,
         transfer_mode=transfer.mode,

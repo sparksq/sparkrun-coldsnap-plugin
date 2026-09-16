@@ -6,36 +6,30 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # sparkrun ColdSnap plugin
 
+ColdSnap integrates process snapshots into sparkrun to reduce model startup
+work. It captures and restores vLLM and SGLang workloads on qualified Linux
+NVIDIA GPU clusters, with native-weight and recovery loading paths.
+
+The plugin provides runtime-image preparation, capture, restore, explicit
+materialization, and lifecycle control through sparkrun. Ordinary launches use
+existing prepared assets and default native-weight generation to `off`;
+materialization prepares assets, verifies a restore, and stops its temporary
+service.
+
+Start with the [preview setup and first-run guide](DEV_PREVIEW.md). See
+[materialize and launch defaults](DEV_PREVIEW.md#materialize-and-launch-defaults)
+for the runtime/driver matrix and
+[cancellation cleanup](DEV_PREVIEW.md#cancellation-cleanup) for interrupt behavior.
+See the [release notes](https://github.com/sparksq/sparkrun-coldsnap-plugin/releases)
+for version history and [versions.yaml](versions.yaml) for plugin and controller
+pins.
+
 This repository is the canonical development home of sparkrun's first-party
 ColdSnap integration. Released sparkrun distributions vendor an immutable
 snapshot of this repository; they do not clone or install it at build time or
 runtime.
 
-Early testers should start with [DEV_PREVIEW.md](DEV_PREVIEW.md).
-
-Release 0.1.7 pins ColdSnap 0.3.26 with DeepSeek image compatibility, native/recovery
-hydration fixes, and validated DSpark calibration reuse for asynchronous startup.
-The first Ctrl-C interrupts blocked provider calls while preserving cleanup;
-a second Ctrl-C forces termination and warns that remote cleanup is unconfirmed.
-See [cancellation cleanup](DEV_PREVIEW.md#cancellation-cleanup).
-
-Release 0.1.5 added native macOS controllers on AMD64
-and ARM64, rank-local startup timings, and coordinator cleanup after dedicated
-materialization. Ordinary launches default native-weight generation to `off`.
-Control-node executables remain separate from target-native CRIU and
-payload-verifier helpers. See
-[cross-architecture controllers](#cross-architecture-controllers-since-013)
-for build modes and source-access requirements.
-
-Release 0.1.2 added explicit SGLang materialization through capture and verified
-restore, using ColdSnap 0.3.20. See the
-[materialization guide](DEV_PREVIEW.md#explicit-sglang-materialization-since-012)
-for native and recovery-only preparation; ordinary recovery restores do not
-gain asynchronous/write-behind materialization.
-
-See [materialize and launch defaults](DEV_PREVIEW.md#materialize-and-launch-defaults)
-for the runtime/driver matrix. Ordinary launches default native generation to
-`off`; dedicated materialization prepares assets and stops its temporary service.
+## Sparkrun integration
 
 The plugin is imported by sparkrun as `sparkrun.plugins.coldsnap` and remains
 subject to sparkrun's `plugins.coldsnap` feature gate. The source repository
@@ -56,27 +50,34 @@ These are runtime overlays, not edits to the user's `registries.yaml`. A user
 can still disable, remove, trust, or repoint either registry through the normal
 sparkrun registry commands.
 
+## Host compatibility
+
+The supported Sparkrun range is `>=0.3.7,<0.5`, declared in
+[plugin.toml](plugin.toml) and [pyproject.toml](pyproject.toml). The plugin declares
+API version 1. On 0.4, capture requires the shared
+`core.image_preparation.stage_prepared_images`/`StagedImageSet` contract to stage
+prepared images and resolve immutable image identities on every host.
+
+Capture uses operation-local recipe and SSH settings and replaces the current
+workload before submitting its containers. Both n580 and n610 request
+privileged, unconfined checkpoint-controller containers through the manager
+runtime; Sparkrun's default io_uring seccomp profile does not replace that
+requirement.
+
 ## Startup timing
 
-Release 0.1.5 adds a startup-readiness handoff for Sparkrun hosts that support
-startup observations. Running restores log Docker-start-to-port-open,
-Docker-start-to-HTTP-health, and Docker-start-to-first-nonempty-token timings,
-all observed on rank 0. ColdSnap's existing acceptance request now streams and
-still validates the entire final reply; the plugin passes that observation to
-the host so it does not run a second inference. Warm restores do not claim TTFT.
+Running restores report Docker-start-to-port-open, Docker-start-to-HTTP-health,
+and Docker-start-to-first-nonempty-token timings, observed on rank 0. ColdSnap's
+acceptance request streams and validates the final reply. When the host supports
+startup observations, the plugin passes that measurement to it to avoid a
+second inference. Warm restores do not report TTFT.
 
-The optional host handoff remains compatible with published Sparkrun
-0.3.7: older hosts do not receive an unsupported constructor argument, and old
-controllers without timing receipts do not gain invented measurements.
-`workload-inspect` returns Docker's nanosecond start timestamp only when the
-controller explicitly requests `include_start_time: true`, preserving the
-older strict response schema.
-
-The three startup durations overlap and must not be summed. Port/HTTP health
-can precede real inference. These measurements exclude preparation before
-container start and differ from the historical external TTFT observer; new
-qualification comparisons must use matched profiles and fresh runs. Normal
-Sparkrun `--no-follow` behavior stays non-blocking.
+These durations overlap and must not be summed. Port/HTTP health can precede
+real inference, and all three measurements exclude preparation before container
+start. Compare matched profiles using the
+[benchmark harnesses](https://github.com/sparksq/coldsnap/blob/main/benchmarks/harnesses/README.md).
+Controllers without timing receipts provide no measurements. Normal Sparkrun
+`--no-follow` behavior stays non-blocking.
 
 ## Development
 
@@ -124,13 +125,23 @@ failure is reported but does not fail environment setup.
 The disposable assembly deliberately exercises sparkrun's in-tree loader. The
 plugin and its registry declarations therefore have the same in-tree provenance
 and trust boundary they have after commit-pinned vendoring; the development
-workflow does not route ColdSnap through `core.external_plugins`. Once the
-ColdSnap binding lands upstream, the assembly recognizes it and does not add a
-duplicate, while the source link continues to make local plugin edits live.
+workflow does not route ColdSnap through `core.external_plugins`. If the host
+already provides the ColdSnap binding, the assembly keeps it, while the source
+link makes local plugin edits live.
 
 The test bootstrap makes this repository's plugin source take precedence over
 the copy vendored by the selected sparkrun checkout. This keeps changes local
 to this repository while exercising them against the real host implementation.
+
+To run tests directly against another checkout, use an environment with that
+host's dependencies and clear any previous assembled-host override:
+
+```bash
+env -u SPARKRUN_DEV_CHECKOUT SPARKRUN_CHECKOUT=/path/to/sparkrun \
+  .venv/bin/python -m pytest
+```
+
+The pytest header reports the host version and source path.
 
 `versions.yaml` is authoritative for both the plugin release version and the
 default ColdSnap controller version. After changing either value, regenerate
@@ -209,9 +220,9 @@ executable (four on Linux, three on macOS) before activating the cache generatio
 
 ## Runtime-neutral manager support
 
-Plugin 0.1.7 pins ColdSnap 0.3.26. The provider
-advertises `runtime-v1` and delegates typed image/workload operations to
-`DockerManagerRuntime`; `runtime_factory` permits an alternate manager backend.
+The provider advertises `runtime-v1` and delegates typed image/workload
+operations to `DockerManagerRuntime`; `runtime_factory` permits an alternate
+manager backend.
 Sparkrun owns its workload labels and all registry credentials. Both engine
 adapters and both snapshot drivers use the same boundary.
 
@@ -244,12 +255,11 @@ also set `COLDSNAP_TEST_DOCKER_IMAGE` to a locally cached shell image (for examp
 These tests create only uniquely named local test resources, clean them up,
 and do not request GPUs or publish images.
 
-## Cross-architecture controllers (since 0.1.3)
+## Cross-architecture controllers
 
 ### Control-node platforms
 
-Release 0.1.5 supports Linux and macOS control nodes on AMD64 and ARM64;
-earlier releases remain Linux-only. GPU targets must remain
+Control nodes can run Linux or macOS on AMD64 or ARM64. GPU targets must be
 qualified Linux hosts. Native Windows controllers are not supported.
 
 The managed controller and its two engine adapters are native to the control
@@ -273,12 +283,10 @@ fallback uses a Linux Go builder with `GOOS=darwin`, not a Darwin container.
 An explicit development controller needs a separate verified Linux target bundle
 or the two `COLDSNAP_TARGET_*` overrides; it cannot reuse Mac sibling binaries.
 
-### Earlier Linux cross-architecture fixes
+### Target platforms and source access
 
-Plugin 0.1.3 includes the Docker/Git retrieval fixes below; 0.1.4 with ColdSnap
-0.3.21 additionally fixes the target activation helpers. Linux x64 control nodes
-can manage ARM64 Spark clusters; the two machines do not need the same CPU
-architecture. Version 0.1.3 alone is not sufficient for cross-architecture capture.
+Control and target nodes do not need the same CPU architecture. Each resource
+uses the platform where it runs:
 
 | Resource | Platform used |
 | --- | --- |
@@ -318,28 +326,9 @@ use `plugins.coldsnap.controller.target_path` to point to a local directory
 containing the matching target bundle and `manifest.json`. For an explicit
 `--coldsnap-binary`, cross-architecture use requires both local target paths
 `COLDSNAP_TARGET_PAYLOAD_VERIFIER` and `COLDSNAP_TARGET_CRIU_RPC`; use the selected
-engine's target adapter as verifier. Existing compatible capsules are unchanged.
+engine's target adapter as verifier.
 
-For Sparkrun 0.3.8, select its git-only `develop-next` branch with
-`SPARKRUN_BRANCH=develop-next` when sourcing `dev.sh`. Sparkrun 0.3.7 is the
-latest published host version; both host versions are regression-tested.
-
-The earlier retrieval checks used an ARM64 controller with an overridden Docker
-default platform. The 0.1.4 qualification also ran an actual AMD64 controller
-process on a physical x64 host against an ARM64 Spark target through the manager
-provider. Both engine verifiers passed target release-identity and native-payload
-checks, and the CRIU helper executed inside a non-GPU ARM64 container at its
-overlaid path. The incompatible controller-native helper was rejected before
-staging. This is helper-boundary qualification, not a new full model
-materialization or GPU TTFT matrix.
-
-## Licensing
-
-The ColdSnap plugin is licensed under the GNU Affero General Public License
-version 3 only. `LICENSE_EXCEPTION` grants an additional permission for
-combining and conveying it with sparkrun; it does not relicense the plugin.
-
-### Supervisor lifecycle API
+## Supervisor lifecycle API
 
 `sparkrun.plugins.coldsnap.api.control_job(operation, job, sctx=...)` supports
 `status`, `sleep`, and `wake` for an existing receipt-backed ColdSnap job.
@@ -349,3 +338,10 @@ parallelism, named cluster, and exact job hosts. It refuses a different live
 job ID or capture ID before invoking native lifecycle control. It never starts
 an ordinary runtime or falls back to a new launch. Supervisors must separately
 verify their ownership and drain requests before changing workload state.
+
+## Licensing
+
+The ColdSnap plugin is licensed under the GNU Affero General Public License
+version 3 only. [LICENSE_EXCEPTION](LICENSE_EXCEPTION) grants an additional
+permission for combining and conveying it with sparkrun; it does not relicense
+the plugin. See [LICENSE](LICENSE) for the full license text.

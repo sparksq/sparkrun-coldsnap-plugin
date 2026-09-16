@@ -33,6 +33,13 @@ if plugin_parent in sparkrun.plugins.__path__:
 sparkrun.plugins.__path__.insert(0, plugin_parent)
 
 
+def pytest_report_header():
+    from importlib.metadata import version
+    import sparkrun
+
+    return "sparkrun host: distribution %s, module %s (source: %s)" % (version("sparkrun"), sparkrun.__version__, sparkrun.__file__)
+
+
 @pytest.fixture(autouse=True)
 def isolate_sparkrun_state(tmp_path: Path, monkeypatch):
     """Keep plugin tests away from developer configuration and network state."""
