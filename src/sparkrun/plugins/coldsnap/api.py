@@ -41,4 +41,6 @@ def control_job(operation: str, job, *, sctx):
         expected_cluster_id=job.cluster_id,
         expected_capture_id=runtime["capture_id"],
     )
+    if report is None:
+        raise RuntimeError("ColdSnap lifecycle control returned no activation report")
     return {"state": report["state"], "cluster_id": report["cluster_id"], "capture_id": report["capture_id"]}

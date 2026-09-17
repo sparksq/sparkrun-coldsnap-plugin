@@ -512,6 +512,7 @@ def _model_payloads(document: dict[str, Any]) -> tuple[tuple[str, str, str], ...
             or not _DIGEST.fullmatch(digest)
             or match is None
             or digest != "sha256:" + match.group(1)
+            or not isinstance(path, str)
         ):
             raise RuntimeError("ColdSnap native model-payload inventory is invalid")
         result.append((owner, path, digest))

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from inspect import signature
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 
 from sparkrun.core.config import resolve_hf_token
 from sparkrun.core.execution import (
@@ -38,7 +38,7 @@ from sparkrun.plugins.coldsnap.compatibility import (
     ColdSnapHardwareReceipt,
     verify_coldsnap_hosts,
 )
-from sparkrun.plugins.coldsnap.controller_process import run_controller
+from sparkrun.plugins.coldsnap.controller_process import ControllerResult, run_controller
 from sparkrun.plugins.coldsnap.host_provider import ColdSnapHostProvider
 from sparkrun.plugins.coldsnap.target_tools import prepare_target_tools
 from sparkrun.plugins.coldsnap.local_overlays import (
@@ -239,7 +239,8 @@ class ColdSnapService:
         context: ExecutionContext,
         hardware: ColdSnapHardwareReceipt | None = None,
     ) -> RestoreDescriptor:
-        snapshot_driver = getattr(hardware, "snapshot_driver", SNAPSHOT_DRIVER_N610)
+        selected_driver: str = getattr(hardware, "snapshot_driver", SNAPSHOT_DRIVER_N610)
+        snapshot_driver = selected_driver
         strategy_options = _strategy_options(context)
         artifact = self._restore_artifact_path(
             context.options,
@@ -265,7 +266,8 @@ class ColdSnapService:
         sglang = request["launch"]["engine"] == "sglang"
         local_asset_kind = "local materialization" if sglang else "target-local residual overlay"
         if (
-            getattr(hardware, "verified", False)
+            hardware is not None
+            and getattr(hardware, "verified", False)
             and not str(strategy_options.get("artifact") or "")
             # vLLM's target-local residual overlays are captured without a native
             # replay manifest. Explicit/cache-only native restores must keep
@@ -703,7 +705,8 @@ class ColdSnapService:
                 if render_only
                 else verify_coldsnap_hosts(plan, sctx, snapshot_driver=snapshot_driver)
             )
-        snapshot_driver = getattr(hardware, "snapshot_driver", SNAPSHOT_DRIVER_N610)
+        selected_driver: str = getattr(hardware, "snapshot_driver", SNAPSHOT_DRIVER_N610)
+        snapshot_driver = selected_driver
         with timed(timeline, "coldsnap.artifact", operation=operation):
             artifact_path = self._restore_artifact_path(
                 options,
@@ -817,7 +820,8 @@ class ColdSnapService:
                 if render_only
                 else verify_coldsnap_hosts(plan, sctx, snapshot_driver=snapshot_driver)
             )
-        snapshot_driver = getattr(hardware, "snapshot_driver", SNAPSHOT_DRIVER_N610)
+        selected_driver: str = getattr(hardware, "snapshot_driver", SNAPSHOT_DRIVER_N610)
+        snapshot_driver = selected_driver
         request = build_request(
             operation,
             options,
@@ -1128,7 +1132,9 @@ class ColdSnapService:
                         if event_thread.is_alive():
                             event_errors.append(RuntimeError("ColdSnap timing event reader did not stop"))
                 receipt = read_operation_receipt(receipt_path, request, completed.returncode)
-                completed.startup_observation = startup_observation(receipt)
+                # Injectable runners may return a plain CompletedProcess. Attach
+                # the same receipt field declared by our controller result.
+                cast(ControllerResult, completed).startup_observation = startup_observation(receipt)
                 if event_errors:
                     logger.warning("ColdSnap timing event stream was not usable: %s", event_errors[0])
                 elif event_streams and receipt is not None:

@@ -129,6 +129,10 @@ _sparkrun_coldsnap_dev_setup() {
     # shellcheck disable=SC1091
     source "$venv_dir/bin/activate" || return 1
 
+    # Sourcing this script opts into the live plugin, even when the selected
+    # host keeps its optional bundled integration disabled by default.
+    export SPARKRUN_FEATURE_PLUGINS_COLDSNAP="${SPARKRUN_FEATURE_PLUGINS_COLDSNAP:-1}"
+
     echo "Updating recipe registries ..."
     if ! "$venv_dir/bin/sparkrun" registry update; then
         echo "Warning: registry update failed (non-fatal)." >&2

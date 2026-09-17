@@ -122,6 +122,10 @@ registries (including plugin-declared registries), and installs the pre-commit
 hooks. As with sparkrun's normal install and upgrade flows, a registry update
 failure is reported but does not fail environment setup.
 
+The development shell defaults `SPARKRUN_FEATURE_PLUGINS_COLDSNAP` to `1`,
+enabling the live plugin before registry updates. An explicit value, such as
+`0` when testing the disabled integration, is preserved.
+
 The disposable assembly deliberately exercises sparkrun's in-tree loader. The
 plugin and its registry declarations therefore have the same in-tree provenance
 and trust boundary they have after commit-pinned vendoring; the development

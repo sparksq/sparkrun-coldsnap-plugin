@@ -899,6 +899,8 @@ def _run(
         if dry_run:
             click.echo(json.dumps(request, indent=2, sort_keys=True))
             return
+        if report is None:
+            raise RuntimeError("ColdSnap lifecycle control returned no activation report")
         click.echo(
             "ColdSnap %s: state=%s cluster=%s capture=%s (%.2fs)"
             % (

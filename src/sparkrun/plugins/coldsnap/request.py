@@ -11,6 +11,7 @@ import re
 import secrets
 from collections.abc import Sequence
 from dataclasses import asdict
+from typing import Any
 
 import sparkrun.api as api
 from sparkrun.core.log_source import SERVE_LOG_PATH
@@ -139,7 +140,7 @@ def build_request(
     native_policy = {key: value for key, value in native_policy.items() if value}
     if native_materialization is not None:
         native_policy["materialize"] = native_materialization
-    weights_policy = {"native": native_policy}
+    weights_policy: dict[str, Any] = {"native": native_policy}
     if mode is not None:
         weights_policy["mode"] = mode
     recovery_read = config.recovery.loader_backend

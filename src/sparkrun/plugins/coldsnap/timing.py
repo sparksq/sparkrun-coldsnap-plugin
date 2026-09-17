@@ -13,9 +13,9 @@ import math
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Sequence, Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 from sparkrun.core.timing import Timeline
 
@@ -139,7 +139,9 @@ class OperationTimingProgress:
         singular, plural, scope, priority = action
         if span.get("name") == "materialization.prepare" and self.required_generation:
             singular = plural = "configuring required native-weight generation"
-        attributes = span.get("attributes") if isinstance(span.get("attributes"), Mapping) else {}
+        attributes = span.get("attributes")
+        if not isinstance(attributes, Mapping):
+            attributes = {}
         clock = self.clocks.get(str(span.get("clock")), {})
         unit = str(attributes.get("unit") or clock.get("unit") or "")
         worker = str(attributes.get("worker") or clock.get("worker") or "")
@@ -175,7 +177,7 @@ class OperationTimingProgress:
             phrase += self._host_scope(self.hosts)
         return phrase
 
-    def _describe_group(self, entries: list[Mapping[str, Any]]) -> str:
+    def _describe_group(self, entries: Sequence[Mapping[str, Any]]) -> str:
         if len(entries) == 1:
             return self._describe(entries[0], plural=False)
         phrase = str(entries[0]["plural"])
@@ -221,6 +223,7 @@ class OperationTimingEventStream:
         if not isinstance(event, dict):
             raise RuntimeError("ColdSnap timing event envelope is invalid")  # noqa: TRY004 -- protocol error
         digest = event.get("request_sha256")
+        sequence = event.get("sequence")
         if (
             event.get("format") != 1
             or event.get("kind") != "coldsnap-timing-event"
@@ -228,10 +231,10 @@ class OperationTimingEventStream:
             or not isinstance(digest, str)
             or not _DIGEST.fullmatch(digest)
             or self.completed
-            or not isinstance(event.get("sequence"), int)
-            or isinstance(event.get("sequence"), bool)
-            or event.get("sequence") != self.sequence + 1
-            or event.get("sequence") > _MAX_EVENTS
+            or not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+            or sequence != self.sequence + 1
+            or sequence > _MAX_EVENTS
         ):
             raise RuntimeError("ColdSnap timing event ordering or identity is invalid")
         if self.request_sha256 is None:
@@ -364,7 +367,7 @@ def follow_operation_timing_events(
     return stream
 
 
-def _valid_clock(value: Any) -> bool:
+def _valid_clock(value: Any) -> TypeGuard[dict[str, Any]]:
     return (
         isinstance(value, dict)
         and {"id", "source", "origin_unix_ns"} <= set(value) <= {"id", "source", "origin_unix_ns", "unit", "worker"}
@@ -378,7 +381,7 @@ def _valid_clock(value: Any) -> bool:
     )
 
 
-def _valid_event_span(value: Any, *, completed: bool) -> bool:
+def _valid_event_span(value: Any, *, completed: bool) -> TypeGuard[dict[str, Any]]:
     if not isinstance(value, dict):
         return False
     required = {"id", "name", "clock", "start_offset_seconds"}

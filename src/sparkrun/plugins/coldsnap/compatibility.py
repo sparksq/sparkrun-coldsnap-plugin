@@ -114,12 +114,12 @@ def verify_coldsnap_hosts(
         if detected is None:
             errors.append("host %r returned no hardware inventory" % host)
             continue
-        minimum = SNAPSHOT_DRIVER_MINIMUMS.get(snapshot_driver, MINIMUM_NVIDIA_DRIVER_MAJOR)
+        minimum = SNAPSHOT_DRIVER_MINIMUMS.get(snapshot_driver or "", MINIMUM_NVIDIA_DRIVER_MAJOR)
         errors.extend(check_coldsnap_host_compatibility(host, detected, minimum_driver_major=minimum))
     if errors:
         raise ColdSnapCompatibilityError(
             "ColdSnap requires NVIDIA CUDA hardware with NVIDIA driver %d or newer:\n  - %s"
-            % (SNAPSHOT_DRIVER_MINIMUMS.get(snapshot_driver, MINIMUM_NVIDIA_DRIVER_MAJOR), "\n  - ".join(errors))
+            % (SNAPSHOT_DRIVER_MINIMUMS.get(snapshot_driver or "", MINIMUM_NVIDIA_DRIVER_MAJOR), "\n  - ".join(errors))
         )
     selected = snapshot_driver or select_snapshot_driver(hardware, plan.host_list)
     logger.log(PROGRESS, "ColdSnap: selected snapshot driver %s", selected)

@@ -10,6 +10,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "https://github.com/spark-arena/sparkrun.git"
@@ -171,3 +173,24 @@ def test_registry_update_failure_is_nonfatal(tmp_path: Path):
     assert result.returncode == 0
     assert "Warning: registry update failed (non-fatal)." in result.stderr
     assert Path(env["FAKE_SPARKRUN_LOG"]).read_text(encoding="utf-8").splitlines() == ["registry update"]
+
+
+@pytest.mark.parametrize("override", [None, "0", "1"])
+def test_development_gate_is_set_before_registry_update_and_respects_overrides(tmp_path, override):
+    plugin, _git_log, env = _development_tree(tmp_path)
+    env.pop("SPARKRUN_FEATURE_PLUGINS_COLDSNAP", None)
+    if override is not None:
+        env["SPARKRUN_FEATURE_PLUGINS_COLDSNAP"] = override
+    feature_log = tmp_path / "feature.log"
+    _executable(
+        plugin / ".venv/bin/sparkrun",
+        'printf "%s\\n" "$SPARKRUN_FEATURE_PLUGINS_COLDSNAP" > "$FAKE_FEATURE_LOG"\n',
+    )
+    result = subprocess.run(
+        ["bash", "-c", 'set -e\nsource "$PLUGIN_ROOT/dev.sh"'],
+        capture_output=True,
+        text=True,
+        env={**env, "PLUGIN_ROOT": str(plugin), "FAKE_FEATURE_LOG": str(feature_log)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert feature_log.read_text().strip() == (override if override is not None else "1")

@@ -37,7 +37,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, TypedDict
 
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
 from sparkrun.plugins.coldsnap._controller_version import __version__ as DEFAULT_CONTROLLER_VERSION
@@ -83,6 +83,10 @@ _COLDSNAP_BUILDER = re.compile(
     r"[ \t]+AS[ \t]+coldsnap_builder[ \t]*$",
     re.MULTILINE,
 )
+
+
+class _InstallOptions(TypedDict, total=False):
+    target_tools: bool
 
 
 class ColdSnapToolError(RuntimeError):
@@ -608,7 +612,7 @@ def install_controller_tool_from_ssh(
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
         )
     resolved = _verify_cached(
-        root, version, commit, **({"target_arch": arch} if target_tools else {"controller_platform": (os_name, arch)})
+        root, version, commit, target_arch=arch if target_tools else "", controller_platform=None if target_tools else (os_name, arch)
     )
     if resolved is None:
         raise ColdSnapToolError("Source-built ColdSnap controller v%s failed identity verification" % version)
@@ -680,7 +684,7 @@ def install_controller_tool(
         stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
     )
     resolved = _verify_cached(
-        root, version, commit, **({"target_arch": arch} if target_tools else {"controller_platform": (os_name, arch)})
+        root, version, commit, target_arch=arch if target_tools else "", controller_platform=None if target_tools else (os_name, arch)
     )
     if resolved is None:
         raise ColdSnapToolError("Installed ColdSnap controller v%s failed identity verification" % version)
@@ -839,7 +843,7 @@ def install_controller_tool_from_oci(
             stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH,
         )
     installed = _verify_cached(
-        root, version, commit, **({"target_arch": arch} if target_tools else {"controller_platform": (os_name, arch)})
+        root, version, commit, target_arch=arch if target_tools else "", controller_platform=None if target_tools else (os_name, arch)
     )
     if installed is None:
         raise ColdSnapToolError("OCI-installed ColdSnap controller v%s failed identity verification" % version)
@@ -880,13 +884,15 @@ def _ensure_tool(config: Any, *, target_arch: str = "") -> ControllerTool:
         return _resolve_explicit(configured_path, version)
     os_name, arch = ("linux", target_arch) if target_arch else _platform()
     root = _cache_path(config.cache_dir, version, os_name, arch)
-    cached = _verify_cached(root, version, commit, **({"target_arch": arch} if target_arch else {"controller_platform": (os_name, arch)}))
+    cached = _verify_cached(
+        root, version, commit, target_arch=arch if target_arch else "", controller_platform=None if target_arch else (os_name, arch)
+    )
     if cached is not None:
         return cached
     if not allow_download:
         raise ColdSnapToolError("ColdSnap controller v%s is not cached and plugins.coldsnap.controller.download is false" % version)
     logger.log(PROGRESS, "ColdSnap: downloading %s v%s for %s/%s", "target tools" if target_arch else "controller", version, os_name, arch)
-    install_options = {"target_tools": True} if target_arch else {}
+    install_options: _InstallOptions = {"target_tools": True} if target_arch else {}
     try:
         return install_controller_tool(config.cache_dir, version, repository, os_name, arch, commit=commit, **install_options)
     except ColdSnapToolError as release_error:

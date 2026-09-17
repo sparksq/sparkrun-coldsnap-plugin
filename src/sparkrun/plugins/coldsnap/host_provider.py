@@ -96,6 +96,7 @@ print(HfApi(token=token).repo_info(repo_id=sys.argv[1], revision=sys.argv[2], re
 
 
 class _ThreadingUnixServer(socketserver.ThreadingUnixStreamServer):
+    provider: ColdSnapHostProvider
     daemon_threads = True
     block_on_close = False
 

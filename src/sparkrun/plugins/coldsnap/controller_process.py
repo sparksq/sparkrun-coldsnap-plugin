@@ -49,6 +49,12 @@ def _signal_group(process, signum):
         pass
 
 
+class ControllerResult(subprocess.CompletedProcess):
+    """Controller completion with an optional validated startup observation."""
+
+    startup_observation: dict[str, object] | None = None
+
+
 def run_controller(arguments, *, input, text, check, capture_output, env):
     """subprocess.run-compatible service boundary with graceful cancellation.
 
@@ -118,7 +124,7 @@ def run_controller(arguments, *, input, text, check, capture_output, env):
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
-        completed = subprocess.CompletedProcess(arguments, process.returncode, stdout, stderr)
+        completed = ControllerResult(arguments, process.returncode, stdout, stderr)
         if check:
             completed.check_returncode()
         return completed

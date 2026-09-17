@@ -14,6 +14,7 @@ import shutil
 import stat
 import tempfile
 import time
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +98,8 @@ def resolve_generation_limit(config=None) -> int | None:
     settings_for = getattr(config, "plugin_settings", None)
     if callable(settings_for):
         settings = settings_for("coldsnap")
+        if not isinstance(settings, Mapping):
+            raise ValueError("ColdSnap plugin settings must be a mapping")
         if "artifact_generations" in settings:
             value = settings["artifact_generations"]
     if isinstance(value, str) and value.strip().lower() == "unlimited":
