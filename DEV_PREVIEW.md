@@ -196,7 +196,7 @@ misses. The TTFT metric begins at Docker
 `State.StartedAt` and ends at the first non-empty streamed token; manager
 preparation and capsule pulls are outside that measurement.
 
-Plugin 0.1.7 pins ColdSnap 0.3.26 in [versions.yaml](versions.yaml), including
+Plugin 0.1.8 pins ColdSnap 0.3.26 in [versions.yaml](versions.yaml), including
 the required `runtime-v1` manager interface introduced in plugin 0.1.1. Historical
 benchmark reports and raw logs are kept outside the public source repository;
 they are not timing guarantees for this release.

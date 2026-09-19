@@ -7,7 +7,7 @@
 # Run: python scripts/update-versions.py --check
 # Run: python scripts/generate-ci-gha.py --check
 
-sparkrun-coldsnap-plugin: 0.1.7
+sparkrun-coldsnap-plugin: 0.1.8
 coldsnap: 0.3.26
 
 project_rules:
