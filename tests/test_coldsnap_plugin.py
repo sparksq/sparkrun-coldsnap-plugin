@@ -2309,6 +2309,14 @@ def test_native_pack_staging_is_worker_specific_and_preverified():
 
 def test_multi_gpu_units_download_only_their_own_worker_packs():
     recipe, options, plan, sctx = _setup()
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+
+    plan.cluster.hosts_hardware = {
+        host: HostHardware(
+            accelerators=[AcceleratorSpec("nvidia", "h100", count=2, memory_gb=80.0, capabilities=frozenset({"cuda"}))],
+        )
+        for host in plan.host_list
+    }
     document = recipe.to_dict()
     document["defaults"]["tensor_parallel"] = 4
     recipe = Recipe.from_dict(document)
