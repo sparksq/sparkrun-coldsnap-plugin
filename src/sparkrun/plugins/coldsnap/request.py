@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import re
 import secrets
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import sparkrun.api as api
 from sparkrun.core.log_source import SERVE_LOG_PATH
-from sparkrun.plugins.coldsnap.artifacts import resolve_artifact_store
+from sparkrun.plugins.coldsnap.artifacts import _read_committed_artifact, resolve_artifact_store
 from sparkrun.plugins.coldsnap.config import ColdSnapRecipe
 from sparkrun.plugins.coldsnap.policy import resolve_coldsnap_policy
 
@@ -202,7 +203,45 @@ def build_request(
     else:
         request["artifact"] = artifact or str(artifact_store.current)
         request["output"] = output or str(artifact_store.capture_output(request_id))
+    if operation != "capture" and plan.runtime.runtime_name == "vllm-distributed":
+        _preserve_legacy_thread_default(launch_units, Path(request["artifact"]))
     return request
+
+
+def _preserve_legacy_thread_default(units: list[dict], artifact_path: Path) -> None:
+    """Retain the removed host default for an already captured vLLM process.
+
+    Older hosts injected OMP_NUM_THREADS=4 into distributed vLLM launches.
+    An unset value on a newer host still restores those captured threads;
+    explicitly requested values remain unchanged for controller validation.
+    No other process environment or arbitrary thread value is inherited.
+    """
+
+    missing = {unit["id"]: unit for unit in units if "OMP_NUM_THREADS" not in unit["environment"]}
+    if not missing:
+        return
+    path = artifact_path.expanduser()
+    if path.is_dir():
+        path /= "artifact.json"
+    if not path.is_file():
+        # Request-only rendering may precede artifact availability.
+        return
+    try:
+        _, artifact = _read_committed_artifact(path.resolve())
+    except RuntimeError:
+        # This optional migration must not replace the service/controller's
+        # authoritative artifact validation or lifecycle identity diagnostics.
+        return
+    launch = artifact.get("launch", {})
+    if not isinstance(launch, Mapping) or launch.get("engine") != "vllm":
+        return
+    for captured in launch.get("units", []):
+        if not isinstance(captured, Mapping):
+            continue
+        environment = captured.get("environment", {})
+        unit = missing.get(captured.get("id"))
+        if unit is not None and isinstance(environment, Mapping) and environment.get("OMP_NUM_THREADS") == "4":
+            unit["environment"]["OMP_NUM_THREADS"] = "4"
 
 
 def _request_id(cluster_id: str, operation: str) -> str:

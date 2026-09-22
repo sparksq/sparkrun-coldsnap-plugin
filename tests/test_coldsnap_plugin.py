@@ -420,6 +420,95 @@ def test_capture_output_option_is_an_optional_override():
     assert output.default == ""
 
 
+@pytest.mark.parametrize("snapshot_driver", ["n580", "n610"])
+@pytest.mark.parametrize("operation", ["restore", "sleep", "wake", "status", "publish", "publish-native"])
+def test_request_retains_captured_legacy_thread_default(tmp_path, monkeypatch, snapshot_driver, operation):
+    _recipe, options, plan, sctx = _setup()
+    # Model a host that no longer injects the historical CPU-thread default.
+    monkeypatch.setattr(plan.runtime, "get_cluster_env", lambda **_kwargs: {})
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "kind": "coldsnap-snapshot-artifact",
+                "state": "committed",
+                "launch": {
+                    "engine": "vllm",
+                    "units": [
+                        {"id": "unit-1", "host": "old-h2", "environment": {"OMP_NUM_THREADS": "4"}},
+                        {"id": "unit-0", "host": "old-h1", "environment": {"OMP_NUM_THREADS": "4", "OLD_MODEL_SETTING": "1"}},
+                    ],
+                },
+            }
+        )
+    )
+    request = build_request(
+        operation,
+        options,
+        plan=plan,
+        sctx=sctx,
+        artifact=str(artifact),
+        snapshot_driver=snapshot_driver,
+        native_repository="org/native",
+        native_revision="commit",
+    )
+    assert [unit["environment"]["OMP_NUM_THREADS"] for unit in request["launch"]["units"]] == ["4", "4"]
+    assert all("OLD_MODEL_SETTING" not in unit["environment"] for unit in request["launch"]["units"])
+
+
+@pytest.mark.parametrize("explicit", ["4", "12", ""])
+def test_request_preserves_explicit_thread_override(tmp_path, monkeypatch, explicit):
+    recipe, options, plan, sctx = _setup()
+    monkeypatch.setattr(plan.runtime, "get_cluster_env", lambda **_kwargs: {})
+    recipe.env["OMP_NUM_THREADS"] = explicit
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "kind": "coldsnap-snapshot-artifact",
+                "state": "committed",
+                "launch": {
+                    "engine": "vllm",
+                    "units": [
+                        {"id": "unit-0", "environment": {"OMP_NUM_THREADS": "4"}},
+                        {"id": "unit-1", "environment": {"OMP_NUM_THREADS": "4"}},
+                    ],
+                },
+            }
+        )
+    )
+    request = build_request("restore", options, plan=plan, sctx=sctx, artifact=str(artifact))
+    assert [unit["environment"]["OMP_NUM_THREADS"] for unit in request["launch"]["units"]] == [explicit, explicit]
+
+
+@pytest.mark.parametrize("captured_value", [None, "8"])
+def test_request_does_not_invent_or_inherit_other_thread_defaults(tmp_path, monkeypatch, captured_value):
+    _recipe, options, plan, sctx = _setup()
+    monkeypatch.setattr(plan.runtime, "get_cluster_env", lambda **_kwargs: {})
+    artifact = tmp_path / "artifact.json"
+    environment = {} if captured_value is None else {"OMP_NUM_THREADS": captured_value}
+    artifact.write_text(
+        json.dumps(
+            {
+                "kind": "coldsnap-snapshot-artifact",
+                "state": "committed",
+                "launch": {"engine": "vllm", "units": [{"id": "unit-0", "environment": environment}]},
+            }
+        )
+    )
+    request = build_request("restore", options, plan=plan, sctx=sctx, artifact=str(artifact))
+    assert all("OMP_NUM_THREADS" not in unit["environment"] for unit in request["launch"]["units"])
+
+
+def test_capture_does_not_read_old_thread_defaults(tmp_path, monkeypatch):
+    _recipe, options, plan, sctx = _setup()
+    monkeypatch.setattr(plan.runtime, "get_cluster_env", lambda **_kwargs: {})
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text("not a descriptor")
+    request = build_request("capture", options, plan=plan, sctx=sctx, artifact=str(artifact))
+    assert all("OMP_NUM_THREADS" not in unit["environment"] for unit in request["launch"]["units"])
+
+
 def test_build_request_uses_resolved_unit_commands_without_profile_file():
     _recipe, options, plan, sctx = _setup()
     request = build_request(
@@ -1206,13 +1295,13 @@ def test_coldsnap_cli_version_reports_host_and_plugin_versions(monkeypatch):
 
     monkeypatch.setattr(
         "sparkrun.plugins.coldsnap.cli._version_identity",
-        lambda: ("0.3.7-alpha", "0.1.0"),
+        lambda: ("0.4.0-alpha", "0.1.0"),
     )
 
     result = CliRunner().invoke(build_command(), ["--version"])
 
     assert result.exit_code == 0, result.output
-    assert result.output == "sparkrun v0.3.7-alpha\nColdSnap plugin v0.1.0\n"
+    assert result.output == "sparkrun v0.4.0-alpha\nColdSnap plugin v0.1.0\n"
 
 
 def test_coldsnap_subcommand_opens_with_progress_version_banner(monkeypatch, caplog):
@@ -1220,7 +1309,7 @@ def test_coldsnap_subcommand_opens_with_progress_version_banner(monkeypatch, cap
 
     monkeypatch.setattr(
         "sparkrun.plugins.coldsnap.cli._version_identity",
-        lambda: ("0.3.7-alpha", "0.1.0"),
+        lambda: ("0.4.0-alpha", "0.1.0"),
     )
 
     with caplog.at_level(PROGRESS, logger="sparkrun.plugins.coldsnap.cli"):
@@ -1228,7 +1317,7 @@ def test_coldsnap_subcommand_opens_with_progress_version_banner(monkeypatch, cap
 
     assert result.exit_code == 0, result.output
     assert [record.message for record in caplog.records] == [
-        "sparkrun v0.3.7-alpha",
+        "sparkrun v0.4.0-alpha",
         "ColdSnap plugin v0.1.0",
     ]
 
@@ -3067,12 +3156,19 @@ def test_coldsnap_prepare_only_receipt_precedes_activation(tmp_path, monkeypatch
     _recipe, options, plan, sctx = _setup()
     sctx.config.cache_dir = str(tmp_path)
     store = resolve_artifact_store(plan=plan, options=options, sctx=sctx)
-    _write_strategy_artifact(store.current)
+    monkeypatch.setattr(plan.runtime, "get_cluster_env", lambda **_kwargs: {})
+    artifact = _write_strategy_artifact(store.current)
+    artifact["launch"] = {
+        "engine": "vllm",
+        "units": [{"id": "unit-%d" % index, "environment": {"OMP_NUM_THREADS": "4"}} for index in range(2)],
+    }
+    store.current.write_text(json.dumps(artifact))
     calls = []
 
     def run_command(arguments, **kwargs):
         calls.append((arguments, json.loads(kwargs["input"])))
         request = calls[-1][1]
+        assert all(unit["environment"]["OMP_NUM_THREADS"] == "4" for unit in request["launch"]["units"])
         output = ""
         if "--prepare-only" in arguments:
             output = json.dumps(

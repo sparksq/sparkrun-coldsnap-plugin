@@ -52,9 +52,10 @@ sparkrun registry commands.
 
 ## Host compatibility
 
-The supported Sparkrun range is `>=0.3.7,<0.5`, declared in
+The plugin targets Sparkrun 0.4.0 alpha and newer, with the package range
+`>=0.4.0,<0.5` declared in
 [plugin.toml](plugin.toml) and [pyproject.toml](pyproject.toml). The plugin declares
-API version 1. On 0.4, capture requires the shared
+API version 1. Capture requires the shared
 `core.image_preparation.stage_prepared_images`/`StagedImageSet` contract to stage
 prepared images and resolve immutable image identities on every host.
 
@@ -63,6 +64,11 @@ workload before submitting its containers. Both n580 and n610 request
 privileged, unconfined checkpoint-controller containers through the manager
 runtime; Sparkrun's default io_uring seccomp profile does not replace that
 requirement.
+
+When an existing distributed vLLM capture contains the former host default
+`OMP_NUM_THREADS=4`, restore and lifecycle requests retain it if the current
+configuration leaves it unset. Explicit values still undergo launch-identity
+validation. New captures use the current host's thread policy.
 
 ## Startup timing
 
@@ -172,7 +178,9 @@ python scripts/generate-ci-gha.py --check
 ```
 
 Pushes to `main` and pull requests targeting `main` run Ruff and the test suite
-on Python 3.12 and 3.13 against the published Sparkrun 0.3.7 host. Each matrix job
+on Python 3.12 and 3.13 against an immutable Sparkrun 0.4 `develop-next` commit,
+pinned in the install command in `versions.yaml`. The macOS workflow uses the
+same host commit. Each matrix job
 also checks version synchronization and generated-workflow drift. The optional
 Go/Python and local Docker integration tests require the environment variables
 described below and are skipped on these standard CI runners; GPU qualification
