@@ -137,3 +137,47 @@ def test_select_snapshot_driver_accepts_one_shot_host_iterables():
 def test_select_snapshot_driver_rejects_an_empty_placement():
     with pytest.raises(ColdSnapCompatibilityError, match="incomplete host inventory"):
         select_snapshot_driver({}, ())
+
+
+@pytest.mark.parametrize("driver", ["580.1", "610.1"])
+def test_live_probe_preserves_cluster_management_interface_pin(monkeypatch, driver):
+    plan = SimpleNamespace(host_list=("node-a",), cluster=SimpleNamespace(user="drew", mgmt_interface="mgmt0"))
+    sctx = SimpleNamespace(config=SimpleNamespace(ssh_user=None, ssh_key=None, ssh_options=None))
+
+    def probe(hosts, *, ssh_kwargs, mgmt_interface):
+        assert hosts == ["node-a"]
+        assert ssh_kwargs["ssh_user"] == "drew"
+        assert mgmt_interface == "mgmt0"
+        return {"node-a": _hardware(driver=driver)}
+
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.compatibility.probe_hosts", probe)
+    assert verify_coldsnap_hosts(plan, sctx).hardware["node-a"].driver_versions["nvidia"] == driver
+
+
+@pytest.mark.parametrize(("drivers", "expected"), [(("580.1", "610.1"), "n580"), (("610.1", "611.1"), "n610")])
+def test_verification_reuses_only_placed_hosts_from_planning_probe(monkeypatch, drivers, expected):
+    from dataclasses import replace
+
+    observed = {host: replace(_hardware(driver=driver), source="detected") for host, driver in zip(("a", "b"), drivers, strict=True)}
+    observed["unused"] = HostHardware(notes="unreachable spare host")
+    plan = SimpleNamespace(host_list=("a", "b"), host_hardware=observed)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.compatibility.probe_hosts", lambda *a, **kw: pytest.fail("repeated hardware probe"))
+    receipt = verify_coldsnap_hosts(plan, SimpleNamespace())
+    assert receipt.snapshot_driver == expected
+    assert receipt.verified
+    assert receipt.hardware == {host: observed[host] for host in ("a", "b")}
+
+
+@pytest.mark.parametrize("failure", ["missing", "failed", "old-driver"])
+def test_planning_observation_failure_is_rejected_without_retry(monkeypatch, failure):
+    from dataclasses import replace
+
+    observed = {"a": replace(_hardware(), source="detected")}
+    if failure == "failed":
+        observed["b"] = _hardware()  # Saved inventory cannot masquerade as a live observation.
+    elif failure == "old-driver":
+        observed["b"] = replace(_hardware(driver="580.1"), source="detected")
+    plan = SimpleNamespace(host_list=("a", "b"), host_hardware=observed)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.compatibility.probe_hosts", lambda *a, **kw: pytest.fail("repeated hardware probe"))
+    with pytest.raises(ColdSnapCompatibilityError, match="host 'b'"):
+        verify_coldsnap_hosts(plan, SimpleNamespace(), snapshot_driver="n610")

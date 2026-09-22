@@ -7,8 +7,8 @@
 # Run: python scripts/update-versions.py --check
 # Run: python scripts/generate-ci-gha.py --check
 
-sparkrun-coldsnap-plugin: 0.1.9
-coldsnap: 0.3.28
+sparkrun-coldsnap-plugin: 0.1.10
+coldsnap: 0.3.29
 
 project_rules:
   sparkrun-coldsnap-plugin:
@@ -30,7 +30,7 @@ ci:
   only_workflows: [version-check, test-python]
   python:
     test_versions: ["3.12", "3.13"]
-    install: uv pip install --system -e . --group dev 'sparkrun @ git+https://github.com/spark-arena/sparkrun.git@e89476ba36933b9faef2e5338d8e4499a96cc016'
+    install: uv pip install --system -e . --group dev 'sparkrun @ git+https://github.com/spark-arena/sparkrun.git@97b64510470f8033fae69cc8d64558190c554798'
     test_command: python -m pytest -v
     extra_steps:
       - name: Verify versions are in sync

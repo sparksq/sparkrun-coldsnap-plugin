@@ -2927,6 +2927,61 @@ def test_capture_local_payload_delegates_to_staged_go_verifier(tmp_path, monkeyp
     assert first["validation"]["reason"] == "test-contract"
 
 
+@pytest.mark.parametrize("driver", ["n580", "n610"])
+@pytest.mark.parametrize("scenario", ["missing", "missing-pack", "ambiguous", "invalid-manifest", "non-file", "verifier-failure"])
+def test_capture_local_probe_distinguishes_absence_from_errors(tmp_path, monkeypatch, driver, scenario):
+    hydration = tmp_path / "captures" / "capture-probe" / "drivers" / driver / "units" / "unit-0" / "hydration"
+    if scenario != "missing":
+        for index in range(2 if scenario == "ambiguous" else 1):
+            directory = hydration / str(index)
+            directory.mkdir(parents=True)
+            (directory / "manifest.json").write_text("invalid" if scenario == "invalid-manifest" else json.dumps({"worker_id": "worker-0"}))
+            if scenario == "non-file":
+                (directory / "model-weights.pack").mkdir()
+            elif scenario != "missing-pack":
+                (directory / "model-weights.pack").write_bytes(b"payload")
+    verifier = tmp_path / "reject-payload"
+    verifier.write_text("#!/bin/sh\necho 'payload digest mismatch' >&2\nexit 1\n")
+    verifier.chmod(0o755)
+    observed = []
+
+    def run_script(_host, script, **kwargs):
+        assert not kwargs.get("quiet"), "SSH and verification failures must remain visible"
+        completed = subprocess.run(("bash",), input=script, text=True, capture_output=True, check=False)
+        observed.append(completed)
+        return SimpleNamespace(success=completed.returncode == 0, stdout=completed.stdout, stderr=completed.stderr)
+
+    monkeypatch.setattr("sparkrun.orchestration.primitives.run_script_on_host", run_script)
+    errors = {
+        "missing": "capture-local model payload not found",
+        "missing-pack": "capture-local model payload not found",
+        "ambiguous": "expected exactly one.*found 2",
+        "invalid-manifest": "manifest is unreadable or invalid",
+        "non-file": "model payload is not a regular file",
+        "verifier-failure": "payload digest mismatch",
+    }
+    with pytest.raises(RuntimeError, match=errors[scenario]):
+        _resolve_capture_local_pack(
+            worker="worker-0",
+            unit="unit-0",
+            host="remote",
+            capture_id="capture-probe",
+            snapshot_driver=driver,
+            state_root=str(tmp_path),
+            expected={"bytes": 7, "sha256": "sha256:" + "a" * 64},
+            ssh_kwargs={},
+            verifier=str(verifier),
+        )
+    result = observed[0]
+    if scenario in {"missing", "missing-pack"}:
+        assert result.returncode == 0
+        assert result.stderr == ""
+        assert result.stdout.startswith("COLDSNAP_MISS ")
+    else:
+        assert result.returncode != 0
+        assert "COLDSNAP_MISS " not in result.stdout
+
+
 def test_downloaded_pack_remote_verifier_is_valid_python(monkeypatch):
     captured = []
 
@@ -3103,11 +3158,27 @@ def test_strategy_native_staging_uses_explicit_controller_adapter(tmp_path, monk
 
 
 @pytest.mark.parametrize(("selected", "prepare_model"), [("native", False), ("recovery", True)])
-def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation(tmp_path, monkeypatch, selected, prepare_model):
+@pytest.mark.parametrize("driver", ["n580", "n610"])
+def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation(tmp_path, monkeypatch, selected, prepare_model, driver):
     _recipe, options, plan, sctx = _setup()
     sctx.config.cache_dir = str(tmp_path)
-    store = resolve_artifact_store(plan=plan, options=options, sctx=sctx)
-    _write_strategy_artifact(store.current)
+    store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=driver)
+    artifact = _write_strategy_artifact(store.current)
+    artifact["snapshot_driver"]["id"] = driver
+    store.current.write_text(json.dumps(artifact))
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+    from sparkrun.plugins.coldsnap.compatibility import ColdSnapHardwareReceipt
+
+    hardware = {
+        host: HostHardware(
+            accelerators=[AcceleratorSpec("nvidia", "gb10")],
+            source="detected",
+            driver_versions={"nvidia": driver[1:] + ".1"},
+            ib_info={"IB_DETECTED": "1"},
+        )
+        for host in plan.host_list
+    }
+    hardware_receipt = ColdSnapHardwareReceipt(hardware, verified=True, snapshot_driver=driver)
 
     def stage(request, **_kwargs):
         prepared = json.loads(json.dumps(request))
@@ -3117,7 +3188,7 @@ def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.stage_native_packs", stage)
     monkeypatch.setattr(
         "sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts",
-        lambda *_args, **_kwargs: SimpleNamespace(verified=True, snapshot_driver="n610"),
+        lambda *_args, **_kwargs: hardware_receipt,
     )
     monkeypatch.setattr(
         "sparkrun.plugins.coldsnap.service.ColdSnapService.prepare_capsules",
@@ -3135,6 +3206,11 @@ def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation
     sctx.timing.end(preparation_span)
     prepared = strategy.finalize_preparation(context, receipts)
 
+    assert prepared.host_hardware == hardware
+    assert prepared.host_hardware is not hardware
+    assert all(prepared.host_hardware[host] is hardware[host] for host in plan.host_list)
+    unverified_receipts = {**receipts, "coldsnap.hardware": replace(hardware_receipt, verified=False)}
+    assert strategy.finalize_preparation(context, unverified_receipts).host_hardware == {}
     assert strategy.name == "coldsnap"
     assert prepared.assets.prepare_model is prepare_model
     assert prepared.assets.run_builder is False

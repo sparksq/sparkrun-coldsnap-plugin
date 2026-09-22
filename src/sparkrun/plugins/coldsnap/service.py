@@ -388,6 +388,11 @@ class ColdSnapService:
             ),
             state=prepared,
             receipts=dict(receipts),
+            host_hardware=(
+                dict(getattr(receipts.get("coldsnap.hardware"), "hardware", {}))
+                if getattr(receipts.get("coldsnap.hardware"), "verified", False)
+                else {}
+            ),
         )
 
     def prepare_capsules(self, context: ExecutionContext, state: PreparedRestore) -> RestoreActivationReceipt:

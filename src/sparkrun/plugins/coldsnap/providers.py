@@ -164,9 +164,13 @@ def _stage_payload_verifier(
             return  # Explicit development binaries have no release manifest.
         result = session.execute(host, [target, "version", "--json"], timeout=30)
         if result.returncode != 0:
-            raise RuntimeError("ColdSnap payload verifier cannot execute on %s: %s" % (
-                host, (result.stderr or result.stdout).decode(errors="replace")[-1000:],
-            ))
+            raise RuntimeError(
+                "ColdSnap payload verifier cannot execute on %s: %s"
+                % (
+                    host,
+                    (result.stderr or result.stdout).decode(errors="replace")[-1000:],
+                )
+            )
         if json.loads(result.stdout) != identity:
             raise RuntimeError("ColdSnap payload verifier release identity mismatch on %s" % host)
 
@@ -353,7 +357,7 @@ def stage_native_packs(
         capture_id, snapshot_driver, captured_hosts, expected_packs = local_inventory
         resolver = local_resolver or (_resolve_capture_local_pack if payload_verifier else unavailable_verifier)
         verifier = ensure_remote_verifier() if local_resolver is None and payload_verifier else ""
-        logger.log(PROGRESS, "ColdSnap: verifying capture-local model payloads for %d worker(s)", worker_count)
+        logger.log(PROGRESS, "ColdSnap: checking capture-local model payloads for %d worker(s)", worker_count)
         staged: list[dict[str, Any]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(worker_count, 20)) as executor:
             futures = {}
@@ -871,11 +875,23 @@ matches = []
 for manifest_path in hydration.glob("*/manifest.json"):
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        continue
+    except (OSError, ValueError) as error:
+        raise SystemExit("capture-local model payload manifest is unreadable or invalid: %s" % manifest_path) from error
+    if not isinstance(manifest, dict):
+        raise SystemExit("capture-local model payload manifest is invalid: %s" % manifest_path)
+    if manifest.get("worker_id") != config["worker"]:
         continue
     candidate = manifest_path.parent / "model-weights.pack"
-    if manifest.get("worker_id") == config["worker"] and candidate.is_file():
-        matches.append(candidate.resolve())
+    try:
+        candidate.stat()
+    except FileNotFoundError:
+        continue
+    matches.append(candidate.resolve())
+if not matches:
+    print("COLDSNAP_MISS " + json.dumps({"reason": "capture-local model payload not found"}, sort_keys=True))
+    raise SystemExit(0)
 if len(matches) != 1:
     raise SystemExit("expected exactly one capture-local model payload under %s; found %d" % (hydration, len(matches)))
 path = matches[0]""",
@@ -894,6 +910,12 @@ path = matches[0]""",
         None,
     )
     if marker is None:
+        miss = next(
+            (line.removeprefix("COLDSNAP_MISS ") for line in result.stdout.splitlines() if line.startswith("COLDSNAP_MISS ")),
+            None,
+        )
+        if miss is not None:
+            raise RuntimeError(json.loads(miss)["reason"])
         raise RuntimeError("remote local-pack verification did not return an inventory")
     record = json.loads(marker)
     _validate_record(record)

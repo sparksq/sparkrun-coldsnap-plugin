@@ -97,17 +97,28 @@ def verify_coldsnap_hosts(
     dry_run: bool = False,
     snapshot_driver: str | None = None,
 ) -> ColdSnapHardwareReceipt:
-    """Live-probe every placed host and enforce ColdSnap's hardware floor."""
+    """Enforce the hardware floor, reusing this launch's probe when available."""
     if dry_run:
         selected = snapshot_driver or SNAPSHOT_DRIVER_N610
         if selected not in SNAPSHOT_DRIVER_MINIMUMS:
             raise ColdSnapCompatibilityError("unknown ColdSnap snapshot driver %r" % selected)
         return ColdSnapHardwareReceipt(hardware={}, verified=False, snapshot_driver=selected)
 
-    ssh_kwargs = build_ssh_kwargs(sctx.config)
-    if plan.cluster.user:
-        ssh_kwargs = {**ssh_kwargs, "ssh_user": plan.cluster.user}
-    hardware = probe_hosts(list(plan.host_list), ssh_kwargs=ssh_kwargs)
+    planned = getattr(plan, "host_hardware", {})
+    if planned:
+        # Only operation-local observations are reusable, never saved cluster
+        # inventory. Keep failed/missing results failed instead of re-probing.
+        hardware = {host: planned[host] for host in plan.host_list if host in planned and planned[host].source == "detected"}
+    else:
+        ssh_kwargs = build_ssh_kwargs(sctx.config)
+        if plan.cluster.user:
+            ssh_kwargs = {**ssh_kwargs, "ssh_user": plan.cluster.user}
+        mgmt_interface = getattr(plan.cluster, "mgmt_interface", None)
+        hardware = probe_hosts(
+            list(plan.host_list),
+            ssh_kwargs=ssh_kwargs,
+            **({"mgmt_interface": mgmt_interface} if mgmt_interface else {}),
+        )
     errors: list[str] = []
     for host in plan.host_list:
         detected = hardware.get(host)

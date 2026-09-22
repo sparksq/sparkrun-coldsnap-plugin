@@ -57,13 +57,24 @@ The plugin targets Sparkrun 0.4.0 alpha and newer, with the package range
 [plugin.toml](plugin.toml) and [pyproject.toml](pyproject.toml). The plugin declares
 API version 1. Capture requires the shared
 `core.image_preparation.stage_prepared_images`/`StagedImageSet` contract to stage
-prepared images and resolve immutable image identities on every host.
+prepared images and resolve immutable image identities on every host. Launch
+also requires the host's `RunPlan.host_hardware` and
+`PreparedExecution.host_hardware` observation handoff.
 
 Capture uses operation-local recipe and SSH settings and replaces the current
 workload before submitting its containers. Both n580 and n610 request
 privileged, unconfined checkpoint-controller containers through the manager
 runtime; Sparkrun's default io_uring seccomp profile does not replace that
 requirement.
+
+Sparkrun probes hardware before placement and the memory-fit summary, then
+ColdSnap reuses those operation-local observations for both snapshot drivers.
+Standalone ColdSnap operations probe when no planning observations are available. The operation keeps configured memory budgets and physical GPU
+assignments and leaves saved inventory unchanged. Reports distinguish detected
+GPU/driver identity, measured or estimated memory capacity, and discovered RDMA
+interfaces. Interface discovery alone does not verify peer connectivity. The
+existing control-to-fabric SSH reachability check is reused for transfer routing;
+it does not test the RDMA data path.
 
 When an existing distributed vLLM capture contains the former host default
 `OMP_NUM_THREADS=4`, restore and lifecycle requests retain it if the current
