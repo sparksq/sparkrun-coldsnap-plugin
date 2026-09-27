@@ -209,7 +209,14 @@ is sufficient, with no PyPI credentials or external publishing secrets needed.
 For a release, update `versions.yaml`, run version synchronization and the checks
 above, merge the reviewed commit to `main`, wait for CI, then push the matching
 tag. A plugin-only CI or documentation change does not require changing the
-ColdSnap controller pin. Sparkrun's commit-pinned vendoring remains the supported
+ColdSnap controller pin. When updating ColdSnap, also set
+`DEFAULT_CONTROLLER_COMMIT` in `src/sparkrun/plugins/coldsnap/tool.py` to the
+full commit of the matching ColdSnap release tag. Controller acquisition and
+the runtime builder share this immutable pin; version synchronization does not
+update it. Verify acquisition against the published release before tagging the
+plugin.
+
+Sparkrun's commit-pinned vendoring remains the supported
 distribution path; GitHub release assets do not replace that approval process.
 
 ## Controller acquisition
