@@ -81,6 +81,44 @@ When an existing distributed vLLM capture contains the former host default
 configuration leaves it unset. Explicit values still undergo launch-identity
 validation. New captures use the current host's thread policy.
 
+## Recipe environment templates
+
+Use the normal recipe `env` block with `{config.NAME}` and `{launch.NAME}`.
+ColdSnap owns their lifecycle for both n580 and n610:
+
+- Capture resolves values after images and model files are prepared. Model paths
+  are checked against the actual workload mounts; ranks are host ordinals, even
+  when a host contains multiple launch units.
+- `launch.runtime_cache_dir` is `/var/cache/coldsnap/runtime`. Capture uses its
+  private seeded cache, and the controller includes the completed cache in the
+  capsule. Restore uses that capsule cache, without the original host cache.
+  Referencing this field requires ColdSnap's cache policy to cover that root.
+- Restore takes templated values from the committed artifact. It performs no
+  normal model/cache probe just to re-render env, so native payload restore
+  retains its ability to run without the original HF weights cache. Files an
+  application subsequently opens still need the appropriate ColdSnap asset
+  contract; an env string alone does not package auxiliary model data.
+- Declared templates and their referenced config values are protected by a
+  captured fingerprint in the reserved `SPARKRUN_COLDSNAP_ENV_INPUTS` variable.
+  Changed or removed templates, or literal overrides replacing them, require
+  recapture. Old captures lacking template provenance require recapture before
+  using this feature. Existing literal-only captures retain their behavior.
+- Node/cluster identity is included when explicitly referenced. Arbitrary
+  `{launch.node_host}` or `{launch.cluster_id}` values cannot be rebound inside
+  an already captured process: changed bindings require recapture. Recognized
+  transport settings still use the controller's existing relocation rules.
+
+Request-only previews mark unavailable model paths/revisions as unresolved and
+perform no asset probes. Actual capture resolves them before replacing a running
+workload. The host must supply `api.materialize(env_template_resolver=...)` and
+the strategy `owns_env_templates` contract, included in Sparkrun 0.4.0.
+
+Ordinary recipe `pre_exec`, `post_exec`, `post_commands`, and `mods` are rejected:
+the controller currently has no recipe-hook lifecycle. Put required preparation
+in a ColdSnap-supported image/asset path until that contract exists. This env
+support does not qualify a custom image or its auxiliary preparation processes
+for checkpoint/restore.
+
 ## Startup timing
 
 Running restores report Docker-start-to-port-open, Docker-start-to-HTTP-health,
