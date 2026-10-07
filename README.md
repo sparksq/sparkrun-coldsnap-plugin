@@ -81,6 +81,36 @@ When an existing distributed vLLM capture contains the former host default
 configuration leaves it unset. Explicit values still undergo launch-identity
 validation. New captures use the current host's thread policy.
 
+## Image acquisition and OCI Relay
+
+Capture image staging and restore capsule pulls use Sparkrun's selected image
+provider. Typed controller `image-pull` callbacks enter the shared provider API
+with the operation's cluster configuration and prepared transport session. OCI
+Relay can acquire a different pinned capsule for each unit, including multiple
+capsules on one host. Each callback targets only its requested host; the
+host-indexed representative image used by shared launch metadata is not used as
+a substitute for the controller's complete per-unit inventory.
+
+Artifacts keep their registry pins. Image inspection, workload launch, and image
+tag sources resolve those pins through the provider's verified local image
+mapping; imported images need not have Docker `RepoDigests`. Lookup happens again
+in later callbacks and activation, so stale in-memory bindings cannot imply
+residency. Managed workloads use `--pull never` after any requested acquisition.
+
+Builtin or absent providers use the existing authenticated Docker pull path.
+Unsupported-provider fallback follows Sparkrun's configured policy, while failed
+transfers never trigger an automatic Docker retry. Image callbacks honor the
+CLI/cluster offline setting, permit only providers supporting offline transfer,
+and prohibit implicit workload pulls. Other ColdSnap acquisition paths still
+need their own offline guarantees; this does not claim full offline operation.
+Local-only image IDs retain their residency requirement. Docker build internals
+and image publication retain their existing paths.
+
+The host must support borrowed `session=` arguments on the image-provider pull
+and runtime-resolution APIs. The manager owns and closes the session; individual
+provider calls reuse it without closing it. Alternative runtime factories keep
+their existing interface and own their own image acquisition.
+
 ## Recipe environment templates
 
 Use the normal recipe `env` block with `{config.NAME}` and `{launch.NAME}`.
