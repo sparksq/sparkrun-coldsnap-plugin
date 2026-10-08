@@ -127,7 +127,11 @@ ColdSnap owns their lifecycle for both n580 and n610:
   normal model/cache probe just to re-render env, so native payload restore
   retains its ability to run without the original HF weights cache. Files an
   application subsequently opens still need the appropriate ColdSnap asset
-  contract; an env string alone does not package auxiliary model data.
+  contract; an env string alone does not package auxiliary model data. Set
+  `coldsnap.weights.native.requires_model_files: true` when the runtime reads
+  pinned checkpoint files during inference (for example, NVMe Engram tables).
+  This stages the original model on native restores while GPU tensors still
+  hydrate from the native pack. The default remains `false`.
 - Declared templates and their referenced config values are protected by a
   captured fingerprint in the reserved `SPARKRUN_COLDSNAP_ENV_INPUTS` variable.
   Changed or removed templates, or literal overrides replacing them, require
@@ -257,7 +261,7 @@ python scripts/generate-ci-gha.py --check
 ```
 
 Pushes to `main` and pull requests targeting `main` run Ruff and the test suite
-on Python 3.12 and 3.13 against an immutable Sparkrun 0.4 `develop-next` commit,
+on Python 3.12 and 3.13 against an immutable Sparkrun 0.4 commit,
 pinned in the install command in `versions.yaml`. The macOS workflow uses the
 same host commit. Each matrix job
 also checks version synchronization and generated-workflow drift. The optional
