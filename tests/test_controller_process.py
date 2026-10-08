@@ -102,7 +102,10 @@ def _manager(mode, root):
         )
 
 
-def _wait_ready(process, root, timeout=10):
+def _wait_ready(process, root, timeout=60):
+    # Three fresh Python interpreters import the host/plugin on cold macOS CI.
+    # This allowance covers fixture setup only; cancellation deadlines below
+    # still start after the adapter is ready and remain unchanged.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if (root / "adapter-pid").exists():
@@ -138,6 +141,14 @@ def test_cancellation_drains_adapter_before_provider_close(tmp_path, scope, sign
         assert report["closed"] and not report["socket_exists"]
         assert report["calls"][0][2] == ["cleanup"]
     finally:
+        # The controller and adapter share a separate session. Killing only
+        # the manager leaves their inherited pipes open after setup failures.
+        controller_pid = tmp_path / "controller-pid"
+        if controller_pid.exists():
+            try:
+                os.killpg(int(controller_pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=5)
@@ -161,6 +172,14 @@ def test_stuck_controller_shutdown_is_bounded_and_warns(tmp_path):
         report = json.loads((tmp_path / "manager-report.json").read_text())
         assert report["closed"] and not report["socket_exists"]
     finally:
+        # The controller and adapter share a separate session. Killing only
+        # the manager leaves their inherited pipes open after setup failures.
+        controller_pid = tmp_path / "controller-pid"
+        if controller_pid.exists():
+            try:
+                os.killpg(int(controller_pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         if process.poll() is None:
             process.kill()
         process.communicate(timeout=5)
