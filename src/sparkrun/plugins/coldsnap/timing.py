@@ -70,7 +70,8 @@ _PROGRESS_ACTIONS: dict[str, tuple[str, str, str, int]] = {
 class OperationTimingProgress:
     """Turn validated timing events into concise, node-aware status text."""
 
-    def __init__(self, request: Mapping[str, Any]):
+    def __init__(self, request: Mapping[str, Any], *, feedback=None):
+        self.feedback = feedback
         weights = request.get("policy", {}).get("weights", {})
         self.required_generation = weights.get("mode") != "native" and weights.get("native", {}).get("materialize") == "required"
         units = request.get("launch", {}).get("units", [])
@@ -87,6 +88,36 @@ class OperationTimingProgress:
         self._lock = threading.Lock()
 
     def accept(self, event: Mapping[str, Any]) -> tuple[str, bool] | None:
+        update = self._accept(event)
+        span = event.get("span")
+        if self.feedback is not None and isinstance(span, Mapping):
+            # The caller supplies validated events. Export selected fields only;
+            # timing receipts and controller completion remain authoritative.
+            clock = self.clocks.get(str(span.get("clock")), {})
+            attributes = span.get("attributes", {})
+            unit = attributes.get("unit") or clock.get("unit")
+            host = attributes.get("host") or self.hosts_by_unit.get(str(unit))
+            status = "running" if event["event"] == "span_start" else "failed" if span.get("status") == "error" else "succeeded"
+            message, visible = update or (f"ColdSnap: {span['name']} {status}", False)
+            base = self.feedback
+            prefix = base.activity_id + "."
+            if span.get("parent"):
+                base = base.child(activity_id=prefix + str(span["parent"]))
+            scoped = base.child(activity_id=prefix + str(span["id"]), host=host)
+            metrics = {
+                key: value
+                for key, value in {
+                    "duration_seconds": span.get("duration_seconds"),
+                    "unit": unit,
+                    "worker": attributes.get("worker") or clock.get("worker"),
+                    "clock_source": clock.get("source"),
+                }.items()
+                if value is not None
+            }
+            scoped.report(message, level="progress" if visible else "info", stage=str(span["name"]), status=status, metrics=metrics)
+        return update
+
+    def _accept(self, event: Mapping[str, Any]) -> tuple[str, bool] | None:
         """Record one event and return ``(message, default_visible)`` when useful."""
         with self._lock:
             if event.get("event") == "clock" and isinstance(event.get("clock"), Mapping):
@@ -337,13 +368,14 @@ def follow_operation_timing_events(
     stream = OperationTimingEventStream(request, on_event=on_event)
     file = None
     try:
-        while not stop.is_set() or file is not None:
+        while True:
             if file is None:
                 try:
                     file = path.open("r", encoding="utf-8")
                 except FileNotFoundError:
-                    if stop.wait(0.05):
+                    if stop.is_set():
                         break
+                    stop.wait(0.05)
                     continue
             position = file.tell()
             line = file.readline(_MAX_EVENT_BYTES + 2)

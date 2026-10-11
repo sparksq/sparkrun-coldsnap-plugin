@@ -30,7 +30,7 @@ from sparkrun.core.execution import (
     PreparationStep,
     PreparedExecution,
 )
-from sparkrun.core.progress import PROGRESS, progress_heartbeat
+from .feedback import reporter, progress as report_progress
 from sparkrun.core.timing import timed
 from sparkrun.plugins.coldsnap.environment import validate_environment_recipe
 from sparkrun.plugins.coldsnap.artifacts import promote_generation, resolve_artifact_store, resolve_generation_limit
@@ -117,7 +117,7 @@ def replace_capture_workload(*, plan, sctx) -> tuple[str, ...]:
         **replacement_options,
     )
     if evicted:
-        logger.log(PROGRESS, "ColdSnap: replaced %d active workload(s) before capture", len(evicted))
+        report_progress(logger, "capture.replace", "ColdSnap: replaced %d active workload(s) before capture", len(evicted), sctx=sctx)
     return tuple(evicted)
 
 
@@ -299,7 +299,7 @@ class ColdSnapService:
                 logger.warning("ColdSnap: ignoring unusable %s: %s", local_asset_kind, error)
                 overlay = None
             if overlay is not None:
-                logger.log(PROGRESS, "ColdSnap: using verified %s %s", local_asset_kind, overlay)
+                report_progress(logger, "materialization.reuse", "ColdSnap: using verified %s %s", local_asset_kind, overlay)
                 artifact = overlay
                 # Auto mode normally prefers a verified native cache. This
                 # overlay owns only recovery residual state, so make the
@@ -571,8 +571,12 @@ class ColdSnapService:
         store.overlay_pending.mkdir(parents=True, exist_ok=True, mode=0o700)
         with TemporaryDirectory(prefix="materialize-sglang-", dir=store.overlay_pending) as temporary:
             output = Path(temporary) / "artifact.json"
-            logger.log(
-                PROGRESS, "ColdSnap: capturing SGLang local %s", "native weights and runtime state" if native_weights else "runtime state"
+            report_progress(
+                logger,
+                "materialization.sglang",
+                "ColdSnap: capturing SGLang local %s",
+                "native weights and runtime state" if native_weights else "runtime state",
+                sctx=sctx,
             )
             self.execute_explicit(
                 "capture",
@@ -605,7 +609,7 @@ class ColdSnapService:
                     output.replace(failed)
                     logger.error("ColdSnap: unpromoted SGLang capture retained at %s", failed)
                 raise
-        logger.log(PROGRESS, "ColdSnap: verified SGLang local materialization %s", result)
+        report_progress(logger, "materialization.sglang", "ColdSnap: verified SGLang local materialization %s", result, sctx=sctx)
         return result
 
     def materialize_local_overlay(
@@ -658,10 +662,12 @@ class ColdSnapService:
         store.overlay_pending.mkdir(parents=True, exist_ok=True, mode=0o700)
         with TemporaryDirectory(prefix="materialize-", dir=store.overlay_pending) as temporary:
             output = Path(temporary) / "artifact.json"
-            logger.log(
-                PROGRESS,
+            report_progress(
+                logger,
+                "materialization.residuals",
                 "ColdSnap: capturing target-local residuals on %s",
                 ", ".join(plan.host_list),
+                sctx=sctx,
             )
             self.execute_explicit(
                 "capture",
@@ -687,9 +693,11 @@ class ColdSnapService:
                 snapshot_driver=snapshot_driver,
             )
         if overlay is None:
-            logger.log(PROGRESS, "ColdSnap: target residuals match the portable capsule; no overlay stored")
+            report_progress(
+                logger, "materialization.residuals", "ColdSnap: target residuals match the portable capsule; no overlay stored", sctx=sctx
+            )
         else:
-            logger.log(PROGRESS, "ColdSnap: stored target-local residual overlay %s", overlay)
+            report_progress(logger, "materialization.residuals", "ColdSnap: stored target-local residual overlay %s", overlay, sctx=sctx)
         return overlay, record, True
 
     def execute_lifecycle(
@@ -708,7 +716,7 @@ class ColdSnapService:
         """Control one exact active ColdSnap workload selected by recipe intent."""
         if operation not in {"sleep", "wake", "status"}:
             raise ValueError("lifecycle operation must be sleep, wake, or status")
-        logger.log(PROGRESS, "ColdSnap: resolving live workload for %s", operation)
+        report_progress(logger, "lifecycle.resolve", "ColdSnap: resolving live workload for %s", operation, sctx=sctx)
         timeline = getattr(sctx, "timing", None)
         with timed(timeline, "coldsnap.hardware", operation=operation):
             hardware = (
@@ -1026,176 +1034,183 @@ class ColdSnapService:
         cluster=None,
         offline: bool | None = None,
     ):
-        executable = binary or self.binary
-        environment = None
-        controller_label = "development controller %s" % executable if executable else ""
-        if executable:
-            explicit_environment = explicit_controller_environment(executable)
-            if explicit_environment:
-                environment = {**os.environ, **explicit_environment}
-        else:
-            if sctx is None:
-                raise RuntimeError("ColdSnap managed controller resolution requires a sparkrun context")
-            tool = self.tool_resolver(sctx.config)
-            executable = str(tool.path)
-            environment = {**os.environ, **tool.environment}
-            logger.info("ColdSnap controller: %s v%s (%s)", tool.path, tool.version, tool.source)
-            controller_label = "controller v%s (%s)" % (tool.version, tool.source)
-        if cluster is not None:
-            if request["operation"] in {"capture", "restore", "publish-native"}:
-                target_tools = self.target_tool_resolver(
-                    hosts=[str(unit["host"]) for unit in request["launch"]["units"]],
-                    engine=request["launch"]["engine"],
+        feedback = reporter(logger, sctx=sctx)
+        try:
+            executable = binary or self.binary
+            environment = None
+            controller_label = "development controller %s" % executable if executable else ""
+            if executable:
+                explicit_environment = explicit_controller_environment(executable)
+                if explicit_environment:
+                    environment = {**os.environ, **explicit_environment}
+            else:
+                if sctx is None:
+                    raise RuntimeError("ColdSnap managed controller resolution requires a sparkrun context")
+                tool = self.tool_resolver(sctx.config)
+                executable = str(tool.path)
+                environment = {**os.environ, **tool.environment}
+                logger.info("ColdSnap controller: %s v%s (%s)", tool.path, tool.version, tool.source)
+                controller_label = "controller v%s (%s)" % (tool.version, tool.source)
+            if cluster is not None:
+                if request["operation"] in {"capture", "restore", "publish-native"}:
+                    target_tools = self.target_tool_resolver(
+                        hosts=[str(unit["host"]) for unit in request["launch"]["units"]],
+                        engine=request["launch"]["engine"],
+                        cluster=cluster,
+                        sctx=sctx,
+                        binary=binary or self.binary,
+                    )
+                    environment = {**os.environ, **(environment or {}), **target_tools.environment}
+                site_policy = resolve_coldsnap_policy(
                     cluster=cluster,
                     sctx=sctx,
-                    binary=binary or self.binary,
+                    hosts=[str(unit["host"]) for unit in request["launch"]["units"]],
+                    probe_remote=True,
                 )
-                environment = {**os.environ, **(environment or {}), **target_tools.environment}
-            site_policy = resolve_coldsnap_policy(
-                cluster=cluster,
-                sctx=sctx,
-                hosts=[str(unit["host"]) for unit in request["launch"]["units"]],
-                probe_remote=True,
+                environment = {
+                    **os.environ,
+                    **(environment or {}),
+                    "COLDSNAP_REMOTE_STATE_ROOT": site_policy.state_root,
+                }
+                logger.info(
+                    "ColdSnap site policy: state_root=%s recovery_read=%s",
+                    site_policy.state_root,
+                    site_policy.recovery_read,
+                )
+            # Direct ColdSnap invocation retains its controller-owned token path.
+            # Under sparkrun, credentialed operations are performed by the
+            # operation-scoped host provider and the token never enters ColdSnap's
+            # process environment.
+            if request["operation"] == "publish-native" and cluster is None:
+                token = resolve_hf_token()
+                if not token:
+                    raise RuntimeError("ColdSnap native publication requires Hugging Face authentication")
+                environment = {**os.environ, **(environment or {}), "HF_TOKEN": token}
+            arguments = [executable, request["operation"], "--request-json", "-"]
+            if prepare_only:
+                arguments.append("--prepare-only")
+            operation = "%s prepare-only" % request["operation"] if prepare_only else str(request["operation"])
+            snapshot_driver = str(request.get("snapshot_driver", {}).get("id") or "<missing>")
+            feedback.progress(
+                "ColdSnap [%s]: %s; running %s" % (snapshot_driver, controller_label, operation),
+                stage=operation,
+                status="running",
+                metrics={"snapshot_driver": snapshot_driver},
             )
-            environment = {
-                **os.environ,
-                **(environment or {}),
-                "COLDSNAP_REMOTE_STATE_ROOT": site_policy.state_root,
-            }
             logger.info(
-                "ColdSnap site policy: state_root=%s recovery_read=%s",
-                site_policy.state_root,
-                site_policy.recovery_read,
+                "ColdSnap request: id=%s snapshot_driver=%s engine=%s units=%d workers=%d",
+                request["id"],
+                snapshot_driver,
+                request["launch"]["engine"],
+                len(request["launch"]["units"]),
+                len(request["launch"]["execution"]["workers"]),
             )
-        # Direct ColdSnap invocation retains its controller-owned token path.
-        # Under sparkrun, credentialed operations are performed by the
-        # operation-scoped host provider and the token never enters ColdSnap's
-        # process environment.
-        if request["operation"] == "publish-native" and cluster is None:
-            token = resolve_hf_token()
-            if not token:
-                raise RuntimeError("ColdSnap native publication requires Hugging Face authentication")
-            environment = {**os.environ, **(environment or {}), "HF_TOKEN": token}
-        arguments = [executable, request["operation"], "--request-json", "-"]
-        if prepare_only:
-            arguments.append("--prepare-only")
-        operation = "%s prepare-only" % request["operation"] if prepare_only else str(request["operation"])
-        snapshot_driver = str(request.get("snapshot_driver", {}).get("id") or "<missing>")
-        logger.log(
-            PROGRESS,
-            "ColdSnap [%s]: %s; running %s",
-            snapshot_driver,
-            controller_label,
-            operation,
-        )
-        logger.info(
-            "ColdSnap request: id=%s snapshot_driver=%s engine=%s units=%d workers=%d",
-            request["id"],
-            snapshot_driver,
-            request["launch"]["engine"],
-            len(request["launch"]["units"]),
-            len(request["launch"]["execution"]["workers"]),
-        )
-        provider_context = (
-            self.host_provider_factory(request, sctx=sctx, cluster=cluster, offline=offline) if cluster is not None else nullcontext(None)
-        )
-        with TemporaryDirectory(prefix="sparkrun-coldsnap-receipt-") as receipt_root:
-            receipt_path = Path(receipt_root) / "operation.json"
-            arguments.extend(["--receipt-json", str(receipt_path)])
-            timeline = getattr(sctx, "timing", None)
-            event_path = Path(receipt_root) / "timing.ndjson"
-            event_stop = threading.Event()
-            event_streams: list[OperationTimingEventStream] = []
-            event_errors: list[BaseException] = []
-            event_thread: threading.Thread | None = None
-            arguments.extend(["--timing-events", str(event_path)])
-            progress = OperationTimingProgress(request)
-
-            def report_event(event: Mapping[str, Any]) -> None:
-                update = progress.accept(event)
-                if update is not None:
-                    message, default_visible = update
-                    logger.log(PROGRESS if default_visible else logging.INFO, "%s", message)
-
-            def consume_events() -> None:
-                try:
-                    event_streams.append(follow_operation_timing_events(event_path, request, event_stop, on_event=report_event))
-                except (OSError, RuntimeError, UnicodeError) as error:  # surfaced on the controller thread below
-                    event_errors.append(error)
-
-            event_thread = threading.Thread(
-                target=consume_events,
-                name="sparkrun-coldsnap-timing-events",
-                daemon=True,
+            provider_context = (
+                self.host_provider_factory(request, sctx=sctx, cluster=cluster, offline=offline)
+                if cluster is not None
+                else nullcontext(None)
             )
-            event_thread.start()
-            logger.debug("ColdSnap command: %s", arguments)
-            with (
-                timed(
-                    timeline,
-                    "coldsnap.controller",
-                    operation=request["operation"],
-                    phase="prepare" if prepare_only else "execute",
-                    snapshot_driver=snapshot_driver,
-                    units=len(request["launch"]["units"]),
-                    workers=len(request["launch"]["execution"]["workers"]),
-                ) as controller_span,
-                provider_context as provider,
-            ):
-                if provider is not None:
-                    environment = {**os.environ, **(environment or {}), **provider.environment}
-                    # Credentialed provider operations resolve controller secrets
-                    # inside sparkrun. Do not leak those credentials into either
-                    # the ColdSnap controller or its engine-adapter child.
-                    environment.pop("HF_TOKEN", None)
-                    environment.pop("HUGGING_FACE_HUB_TOKEN", None)
-                try:
-                    heartbeat_base = f"ColdSnap [{snapshot_driver}]: {operation}"
-                    with progress_heartbeat(logger, lambda: progress.heartbeat_label(heartbeat_base)):
-                        completed = self.run_command(
-                            arguments,
-                            input=json.dumps(request, indent=2, sort_keys=True) + "\n",
-                            text=True,
-                            check=False,
-                            capture_output=capture_output,
-                            env=environment,
-                        )
-                finally:
-                    event_stop.set()
-                    if event_thread is not None:
-                        event_thread.join(timeout=2.0)
-                        if event_thread.is_alive():
-                            event_errors.append(RuntimeError("ColdSnap timing event reader did not stop"))
-                receipt = read_operation_receipt(receipt_path, request, completed.returncode)
-                # Injectable runners may return a plain CompletedProcess. Attach
-                # the same receipt field declared by our controller result.
-                cast(ControllerResult, completed).startup_observation = startup_observation(receipt)
-                if event_errors:
-                    logger.warning("ColdSnap timing event stream was not usable: %s", event_errors[0])
-                elif event_streams and receipt is not None:
+            with TemporaryDirectory(prefix="sparkrun-coldsnap-receipt-") as receipt_root:
+                receipt_path = Path(receipt_root) / "operation.json"
+                arguments.extend(["--receipt-json", str(receipt_path)])
+                timeline = getattr(sctx, "timing", None)
+                event_path = Path(receipt_root) / "timing.ndjson"
+                event_stop = threading.Event()
+                event_streams: list[OperationTimingEventStream] = []
+                event_errors: list[BaseException] = []
+                event_thread: threading.Thread | None = None
+                arguments.extend(["--timing-events", str(event_path)])
+                progress = OperationTimingProgress(request, feedback=feedback)
+
+                def report_event(event: Mapping[str, Any]) -> None:
+                    progress.accept(event)
+
+                def consume_events() -> None:
                     try:
-                        event_streams[0].finish(receipt)
-                    except RuntimeError as error:
-                        logger.warning("ColdSnap timing event stream was not usable: %s", error)
-                imported = import_operation_timing(
-                    timeline,
-                    receipt,
-                    controller_span,
+                        event_streams.append(follow_operation_timing_events(event_path, request, event_stop, on_event=report_event))
+                    except (OSError, RuntimeError, UnicodeError) as error:  # surfaced on the controller thread below
+                        event_errors.append(error)
+
+                event_thread = threading.Thread(
+                    target=consume_events,
+                    name="sparkrun-coldsnap-timing-events",
+                    daemon=True,
                 )
-                if imported:
-                    logger.debug("ColdSnap controller timing: imported %d span(s)", imported)
-                if completed.returncode:
-                    detail = str(getattr(completed, "stderr", "") or "").strip()
-                    raise RuntimeError(
-                        "coldsnap %s%s failed with exit code %d%s"
-                        % (
-                            request["operation"],
-                            " prepare-only" if prepare_only else "",
-                            completed.returncode,
-                            ": " + detail[-2000:] if detail else "",
-                        )
+                event_thread.start()
+                logger.debug("ColdSnap command: %s", arguments)
+                with (
+                    timed(
+                        timeline,
+                        "coldsnap.controller",
+                        operation=request["operation"],
+                        phase="prepare" if prepare_only else "execute",
+                        snapshot_driver=snapshot_driver,
+                        units=len(request["launch"]["units"]),
+                        workers=len(request["launch"]["execution"]["workers"]),
+                    ) as controller_span,
+                    provider_context as provider,
+                ):
+                    if provider is not None:
+                        environment = {**os.environ, **(environment or {}), **provider.environment}
+                        # Credentialed provider operations resolve controller secrets
+                        # inside sparkrun. Do not leak those credentials into either
+                        # the ColdSnap controller or its engine-adapter child.
+                        environment.pop("HF_TOKEN", None)
+                        environment.pop("HUGGING_FACE_HUB_TOKEN", None)
+                    try:
+                        heartbeat_base = f"ColdSnap [{snapshot_driver}]: {operation}"
+                        with feedback.heartbeat(lambda: progress.heartbeat_label(heartbeat_base)):
+                            completed = self.run_command(
+                                arguments,
+                                input=json.dumps(request, indent=2, sort_keys=True) + "\n",
+                                text=True,
+                                check=False,
+                                capture_output=capture_output,
+                                env=environment,
+                            )
+                    finally:
+                        event_stop.set()
+                        if event_thread is not None:
+                            # Drain the bounded event stream before terminal feedback.
+                            # A subscriber may enqueue slowly; never publish completion
+                            # while the reader can still emit earlier activity updates.
+                            event_thread.join()
+                    receipt = read_operation_receipt(receipt_path, request, completed.returncode)
+                    # Injectable runners may return a plain CompletedProcess. Attach
+                    # the same receipt field declared by our controller result.
+                    cast(ControllerResult, completed).startup_observation = startup_observation(receipt)
+                    if event_errors:
+                        logger.warning("ColdSnap timing event stream was not usable: %s", event_errors[0])
+                    elif event_streams and receipt is not None:
+                        try:
+                            event_streams[0].finish(receipt)
+                        except RuntimeError as error:
+                            logger.warning("ColdSnap timing event stream was not usable: %s", error)
+                    imported = import_operation_timing(
+                        timeline,
+                        receipt,
+                        controller_span,
                     )
-        return completed
+                    if imported:
+                        logger.debug("ColdSnap controller timing: imported %d span(s)", imported)
+                    if completed.returncode:
+                        detail = str(getattr(completed, "stderr", "") or "").strip()
+                        raise RuntimeError(
+                            "coldsnap %s%s failed with exit code %d%s"
+                            % (
+                                request["operation"],
+                                " prepare-only" if prepare_only else "",
+                                completed.returncode,
+                                ": " + detail[-2000:] if detail else "",
+                            )
+                        )
+            feedback.progress("ColdSnap: %s completed" % operation, stage=operation, status="succeeded")
+            return completed
+        except BaseException:
+            feedback.report(
+                "ColdSnap: %s failed or interrupted" % request["operation"], level="error", stage=str(request["operation"]), status="failed"
+            )
+            raise
 
 
 def _has_registry_backed_capsules(artifact: Mapping[str, Any]) -> bool:

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sparkrun.core.progress import PROGRESS
+from .feedback import progress as report_progress
 from sparkrun.plugins.coldsnap.policy import resolve_coldsnap_policy
 
 
@@ -156,7 +156,7 @@ def _stage_payload_verifier(
     root = str(Path(state_root) / "tools" / "payload-verifier" / digest)
     target = str(Path(root) / "coldsnap-payload-verifier")
     hosts = sorted({str(unit["host"]) for unit in request["launch"]["units"]})
-    logger.log(PROGRESS, "ColdSnap: staging Go payload verifier on %d host(s)", len(hosts))
+    report_progress(logger, "verifier.stage", "ColdSnap: staging Go payload verifier on %d host(s)", len(hosts))
     session = open_cluster_host_session(plan.cluster, ssh_kwargs=ssh_kwargs)
 
     def verify_identity(host: str) -> None:
@@ -318,7 +318,9 @@ def stage_native_packs(
     if expected_packs:
         resolver = node_cache_resolver or (_resolve_node_cached_pack if payload_verifier else unavailable_verifier)
         verifier = ensure_remote_verifier() if node_cache_resolver is None and payload_verifier else ""
-        logger.log(PROGRESS, "ColdSnap: checking node-local native cache for %d worker(s)", worker_count)
+        report_progress(
+            logger, "weights.native_check", "ColdSnap: checking node-local native cache for %d worker(s)", worker_count, sctx=sctx
+        )
         staged: list[dict[str, Any]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(worker_count, 20)) as executor:
             futures = {
@@ -348,7 +350,7 @@ def stage_native_packs(
                     cache_failures.append("worker %s local cache: %s" % (worker_id, error))
         if not cache_failures and len(staged) == worker_count:
             native["staged"] = sorted(staged, key=lambda record: str(record["worker"]))
-            logger.log(PROGRESS, "ColdSnap: using verified node-local native model payloads")
+            report_progress(logger, "weights.native_ready", "ColdSnap: using verified node-local native model payloads", sctx=sctx)
             return StageOutcome(prepared, "native")
     local_inventory = _capture_local_inventory(prepared)
     expected_packs = local_inventory[3] if local_inventory is not None else expected_packs
@@ -357,7 +359,9 @@ def stage_native_packs(
         capture_id, snapshot_driver, captured_hosts, expected_packs = local_inventory
         resolver = local_resolver or (_resolve_capture_local_pack if payload_verifier else unavailable_verifier)
         verifier = ensure_remote_verifier() if local_resolver is None and payload_verifier else ""
-        logger.log(PROGRESS, "ColdSnap: checking capture-local model payloads for %d worker(s)", worker_count)
+        report_progress(
+            logger, "weights.capture_check", "ColdSnap: checking capture-local model payloads for %d worker(s)", worker_count, sctx=sctx
+        )
         staged: list[dict[str, Any]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(worker_count, 20)) as executor:
             futures = {}
@@ -396,7 +400,7 @@ def stage_native_packs(
                     local_failures.append("worker %s: %s" % (worker_id, error))
         if not local_failures and len(staged) == worker_count:
             native["staged"] = sorted(staged, key=lambda record: str(record["worker"]))
-            logger.log(PROGRESS, "ColdSnap: using verified capture-local model payloads")
+            report_progress(logger, "weights.capture_ready", "ColdSnap: using verified capture-local model payloads", sctx=sctx)
             return StageOutcome(prepared, "native")
 
     _fill_native_inventory_from_artifact(prepared, native)
@@ -420,7 +424,7 @@ def stage_native_packs(
         verifier = ensure_remote_verifier() if payload_verifier else ""
     else:
         verifier = ""
-    logger.log(PROGRESS, "ColdSnap: staging model payloads from %s@%s", repository, revision)
+    report_progress(logger, "weights.stage", "ColdSnap: staging model payloads from %s@%s", repository, revision, sctx=sctx)
     cache_dir = str(plan.cluster.cache_dir or getattr(sctx.config, "hf_cache_dir", "~/.cache/huggingface"))
     staged: list[dict[str, Any]] = []
     provider_failures = []

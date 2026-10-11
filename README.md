@@ -447,3 +447,14 @@ The ColdSnap plugin is licensed under the GNU Affero General Public License
 version 3 only. [LICENSE_EXCEPTION](LICENSE_EXCEPTION) grants an additional
 permission for combining and conveying it with sparkrun; it does not relicense
 the plugin. See [LICENSE](LICENSE) for the full license text.
+
+## Structured operation feedback
+
+With Sparkrun feedback API 1, ColdSnap publishes preparation/build/materialization
+stages and validated controller spans to `sctx.events` and daemon job event
+streams. Span feedback includes activity/parent IDs, stable stage names, host/unit
+identity, duration, and running/succeeded/failed status. Background timing readers
+and heartbeats retain the enclosing Sparkrun operation. Controller completion is
+reported after checking its execution result and receipt; intermediate spans do
+not determine the job outcome. CLI status text and older-host logging remain
+available. See Sparkrun's `docs/FEEDBACK.md` for the consumer contract.

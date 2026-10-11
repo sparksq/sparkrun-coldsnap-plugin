@@ -46,6 +46,9 @@ def isolate_sparkrun_state(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
     monkeypatch.setenv("SPARKRUN_NO_EXTERNAL_PLUGINS", "1")
+    # Mock host sessions must not acquire real relay binaries or resolve registry
+    # pins through an unrelated default-on provider in the development host.
+    monkeypatch.setenv("SPARKRUN_FEATURE_PLUGINS_OCI_RELAY", "0")
 
     import sparkrun.core.bootstrap as bootstrap
     import sparkrun.core.config as config

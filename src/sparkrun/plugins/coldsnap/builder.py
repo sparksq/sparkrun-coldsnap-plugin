@@ -30,7 +30,8 @@ from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
 from sparkrun.builders.base import BuilderPlugin
-from sparkrun.core.progress import PROGRESS, progress_heartbeat
+from .feedback import progress as report_progress
+from sparkrun.core.progress import progress_heartbeat
 from sparkrun.orchestration.primitives import run_script_on_host, run_script_on_host_streaming
 from sparkrun.orchestration.ssh import run_rsync, should_run_locally
 from sparkrun.plugins.coldsnap.git_sources import clone_pinned_source
@@ -586,8 +587,9 @@ def _report_nccl_selection(result: Any) -> None:
     )
     match = _NCCL_LATEST_MESSAGE.search(output)
     if match:
-        logger.log(
-            PROGRESS,
+        report_progress(
+            logger,
+            "build.nccl",
             "ColdSnap builder: base NCCL %s; used latest qualified same-major provider %s",
             match.group(1),
             match.group(2),
@@ -829,7 +831,7 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
         remote = not should_run_locally(host, (ssh_kwargs or {}).get("ssh_user"))
         with TemporaryDirectory(prefix="sparkrun-coldsnap-sources-") as temporary:
             root = Path(temporary)
-            logger.log(PROGRESS, "ColdSnap builder: fetching pinned sources on the control node")
+            report_progress(logger, "build.sources", "ColdSnap builder: fetching pinned sources on the control node")
             with progress_heartbeat(logger, "ColdSnap builder: fetching pinned sources"):
                 for source in plan.sources:
                     path = root / (source.name.replace("_", "-") + "-" + source.revision)
@@ -847,7 +849,7 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
             if not getattr(created, "success", False) or not re.fullmatch(r"/tmp/sparkrun-coldsnap-sources\.[A-Za-z0-9]{10}", destination):
                 raise RuntimeError("ColdSnap builder could not create private source staging directory: %s" % _result_detail(created))
             try:
-                logger.log(PROGRESS, "ColdSnap builder: staging verified sources on %s", host)
+                report_progress(logger, "build.sources", "ColdSnap builder: staging verified sources on %s", host)
                 result = run_rsync(str(root), host, destination, **(ssh_kwargs or {}), timeout=600)
                 if not result.success:
                     raise RuntimeError("ColdSnap builder could not stage verified sources on %s: %s" % (host, _result_detail(result)))
@@ -897,7 +899,7 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
             )
             return plan.output_image
 
-        logger.log(PROGRESS, "ColdSnap builder: preparing pinned input image on %s", build_host)
+        report_progress(logger, "build.input", "ColdSnap builder: preparing pinned input image on %s", build_host)
         logger.info("ColdSnap builder input: %s", image)
         docker_platform = self._detect_docker_platform(hosts[0], settings, ssh_kwargs)
         if build_host != hosts[0] and self._detect_docker_platform(build_host, settings, ssh_kwargs) != docker_platform:
@@ -911,11 +913,11 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
         if self._input_runtime_label(image, build_host, settings, ssh_kwargs) == "%s-cuda-criu-v1" % engine and self._input_supports_driver(
             image, build_host, snapshot_driver, settings, ssh_kwargs
         ):
-            logger.log(PROGRESS, "ColdSnap builder: input image is already enabled; conversion skipped")
+            report_progress(logger, "build.input", "ColdSnap builder: input image is already enabled; conversion skipped")
             logger.info("ColdSnap-enabled input image: %s", image)
             return image
 
-        logger.log(PROGRESS, "ColdSnap builder: detecting target CUDA architecture")
+        report_progress(logger, "build.architecture", "ColdSnap builder: detecting target CUDA architecture")
         cuda_arch = self._detect_cuda_arch(image, build_host, settings, ssh_kwargs, docker_platform)
         logger.info("ColdSnap builder CUDA architecture: sm_%s", cuda_arch)
         plan = _build_plan(image, settings, cuda_arch, snapshot_driver, engine, docker_platform=docker_platform)
@@ -926,13 +928,11 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
             ", ".join("%s@%s" % (source.name, source.revision) for source in plan.sources),
         )
         if not settings.rebuild and self._image_exists(plan.output_image, build_host, settings, ssh_kwargs, docker_platform):
-            logger.log(PROGRESS, "ColdSnap builder: reusing cached image %s", plan.output_image)
+            report_progress(logger, "build.cache", "ColdSnap builder: reusing cached image %s", plan.output_image)
             return plan.output_image
 
-        logger.log(
-            PROGRESS,
-            "ColdSnap builder: building runtime image on %s (first build may take several minutes)",
-            build_host,
+        report_progress(
+            logger, "build.runtime", "ColdSnap builder: building runtime image on %s (first build may take several minutes)", build_host
         )
         logger.info("ColdSnap builder output: %s", plan.output_image)
         with self._prepared_sources(plan, build_host, ssh_kwargs) as source_root:
@@ -946,7 +946,7 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
         if not getattr(result, "success", False):
             raise RuntimeError("ColdSnap image conversion failed on %s: %s" % (build_host, _result_detail(result)))
         _report_nccl_selection(result)
-        logger.log(PROGRESS, "ColdSnap builder: ready %s", plan.output_image)
+        report_progress(logger, "build.complete", "ColdSnap builder: ready %s", plan.output_image)
         return plan.output_image
 
 
