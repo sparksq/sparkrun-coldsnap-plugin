@@ -44,3 +44,9 @@ def control_job(operation: str, job, *, sctx):
     if report is None:
         raise RuntimeError("ColdSnap lifecycle control returned no activation report")
     return {"state": report["state"], "cluster_id": report["cluster_id"], "capture_id": report["capture_id"]}
+
+
+def matches_job(job):
+    """Advertise lifecycle only for an exact recorded activation receipt."""
+    runtime = (job.metadata or {}).get("runtime_info") or {}
+    return runtime.get("execution_strategy") == "coldsnap" and bool(runtime.get("capture_id"))

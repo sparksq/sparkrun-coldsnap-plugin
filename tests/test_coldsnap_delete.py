@@ -22,7 +22,10 @@ from sparkrun.transports.session import HostCommandResult
 
 
 def _setup(tmp_path: Path):
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
     recipe = Recipe.from_dict(
         {
             "recipe_version": "2",

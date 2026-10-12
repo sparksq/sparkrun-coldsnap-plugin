@@ -49,7 +49,10 @@ def _artifact() -> dict:
 
 
 def test_artifact_reference_uses_explicit_value_or_capsule_repository_default():
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
     recipe = Recipe.from_dict(
         {
             "recipe_version": "2",
@@ -156,6 +159,7 @@ def test_data_only_descriptor_is_extracted_by_digest_with_an_explicit_foreign_pl
     raw = "docker.io/example/capsules:mutable"
     pinned = raw.rsplit(":", 1)[0] + "@" + _DIGEST
     calls = []
+
     def run(arguments, **_kwargs):
         calls.append(arguments)
         output = ""
@@ -169,8 +173,10 @@ def test_data_only_descriptor_is_extracted_by_digest_with_an_explicit_foreign_pl
             output = json.dumps([pinned])
         elif arguments[1] == "cp":
             from pathlib import Path
+
             Path(arguments[-1]).write_text(json.dumps(_artifact()))
         return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
     stage_oci_artifact("oci://" + raw, tmp_path / "artifact.json", run_command=run)
     assert not any(command[1] in {"run", "start"} for command in calls)
 
@@ -182,7 +188,8 @@ def test_descriptor_manifest_list_skips_attestations_and_selects_a_pinned_data_i
         {"Descriptor": {"digest": _DIGEST, "platform": {"os": "linux", "architecture": "amd64"}}},
     ]
     image, platform = _descriptor_image(
-        "registry.example:5000/example/capsules:tag", docker="docker",
+        "registry.example:5000/example/capsules:tag",
+        docker="docker",
         run_command=lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(entries)),
     )
     assert image == "registry.example:5000/example/capsules@" + _DIGEST
@@ -192,24 +199,39 @@ def test_descriptor_manifest_list_skips_attestations_and_selects_a_pinned_data_i
 @pytest.mark.parametrize("manifest", [{}, [], {"Descriptor": {"digest": _DIGEST, "platform": {"os": "unknown"}}}])
 def test_descriptor_rejects_a_manifest_without_a_real_supported_image(manifest):
     with pytest.raises(RuntimeError, match="no supported Linux image"):
-        _descriptor_image("example/capsules:tag", docker="docker", run_command=lambda *_a, **_k: SimpleNamespace(
-            returncode=0, stdout=json.dumps(manifest),
-        ))
+        _descriptor_image(
+            "example/capsules:tag",
+            docker="docker",
+            run_command=lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(manifest),
+            ),
+        )
 
 
 def test_descriptor_cannot_substitute_a_different_requested_single_manifest_digest():
     manifest = {"Descriptor": {"digest": _DIGEST, "platform": {"os": "linux", "architecture": "arm64"}}}
     with pytest.raises(RuntimeError, match="does not match its requested digest"):
-        _descriptor_image("example/capsules@sha256:" + "b" * 64, docker="docker", run_command=lambda *_a, **_k: SimpleNamespace(
-            returncode=0, stdout=json.dumps(manifest),
-        ))
+        _descriptor_image(
+            "example/capsules@sha256:" + "b" * 64,
+            docker="docker",
+            run_command=lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(manifest),
+            ),
+        )
 
 
 def test_resolved_descriptor_uses_the_requested_repository_not_an_unrelated_alias():
     inventory = ["other.example/capsules@" + _DIGEST, "example/capsules@sha256:" + "b" * 64]
-    resolved = _resolved_reference("docker.io/example/capsules:tag", docker="docker", run_command=lambda *_a, **_k: SimpleNamespace(
-        returncode=0, stdout=json.dumps(inventory),
-    ))
+    resolved = _resolved_reference(
+        "docker.io/example/capsules:tag",
+        docker="docker",
+        run_command=lambda *_a, **_k: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(inventory),
+        ),
+    )
     assert resolved == "oci://example/capsules@sha256:" + "b" * 64
 
 

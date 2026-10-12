@@ -16,7 +16,10 @@ register = __import__("sparkrun.plugins.coldsnap", fromlist=["register"]).regist
 
 
 def test_registration_contributes_the_recipe_repository(tmp_path):
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
 
     declarations = registry_defaults.iter_declared_registries()
     assert [declaration.owner for declaration in declarations] == ["coldsnap", "coldsnap"]
@@ -43,8 +46,14 @@ def test_registration_contributes_the_recipe_repository(tmp_path):
 
 
 def test_registry_registration_is_idempotent():
-    register(None)
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
 
     assert [declaration.entry.name for declaration in registry_defaults.iter_declared_registries()] == [
         "coldsnap",

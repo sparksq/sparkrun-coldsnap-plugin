@@ -60,7 +60,10 @@ from sparkrun.transports.session import HostCommandResult
 
 
 def _setup():
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
     digest = "a" * 64
     recipe = Recipe.from_dict(
         {
@@ -3306,7 +3309,10 @@ def test_coldsnap_prepare_only_receipt_precedes_activation(tmp_path, monkeypatch
 
 
 def test_coldsnap_recipe_rejects_coerced_types_and_internal_payload_paths():
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
     base = {
         "recipe_version": "2",
         "model": "Qwen/Qwen3.5-0.8B",
@@ -3376,7 +3382,10 @@ def test_coldsnap_recipe_rejects_coerced_types_and_internal_payload_paths():
 
 
 def test_coldsnap_recipe_rejects_sparkrun_and_runtime_owned_env():
-    register(None)
+    from sparkrun.core.plugin_identity import PluginIdentity, plugin_registration
+
+    with plugin_registration(PluginIdentity("coldsnap", "sparkrun.plugins.coldsnap", ("in-tree", "sparkrun.plugins.coldsnap", None))):
+        register(None)
     recipe = Recipe.from_dict(
         {
             "recipe_version": "2",

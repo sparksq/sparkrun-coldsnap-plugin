@@ -55,6 +55,10 @@ def _register_recipe_registries() -> None:
 
 def register(v) -> None:
     _register_recipe_registries()
+    if hasattr(_plugin_api, "register_workload_lifecycle"):
+        from .api import matches_job, control_job
+
+        _plugin_api.register_workload_lifecycle(_plugin_api.WorkloadLifecycleProvider("coldsnap", matches_job, control_job))
     register_recipe_item(
         "coldsnap",
         _HANDLER,
