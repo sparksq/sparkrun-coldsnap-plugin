@@ -167,6 +167,9 @@ class ColdSnapHostProvider:
             config = copy(config)
             config.ssh_user = cluster.user
         ssh_kwargs = build_ssh_kwargs(config)
+        from sparkrun.feedback import get_feedback
+
+        feedback = get_feedback("coldsnap", sctx=sctx)
         factory = session_factory or open_cluster_host_session
         self.session = factory(cluster, ssh_kwargs=ssh_kwargs)
         try:
@@ -178,6 +181,7 @@ class ColdSnapHostProvider:
                     config=config,
                     ssh_kwargs=ssh_kwargs,
                     offline=resolve_offline(offline, cluster).offline,
+                    feedback=feedback,
                 )
             )
         except BaseException:

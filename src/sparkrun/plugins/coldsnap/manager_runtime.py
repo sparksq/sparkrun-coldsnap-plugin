@@ -36,12 +36,13 @@ class RuntimeOperationError(HostSessionError):
 class DockerManagerRuntime:
     """Realize ColdSnap workload and OCI requests with a host Docker engine."""
 
-    def __init__(self, session, *, command: str = "docker", config=None, ssh_kwargs=None, offline: bool = False):
+    def __init__(self, session, *, command: str = "docker", config=None, ssh_kwargs=None, offline: bool = False, feedback=None):
         self.session = session
         self.command = command
         self.config = config
         self.ssh_kwargs = dict(ssh_kwargs or {})
         self.offline = offline
+        self.feedback = feedback
 
     def invoke(self, host: str, request: Mapping[str, Any]) -> dict[str, Any]:
         validate_runtime_request(request)
@@ -169,6 +170,7 @@ class DockerManagerRuntime:
                 offline=self.offline,
                 force_pull=force,
                 session=self.session,
+                feedback=self.feedback,
             )
         if handled is None:
             if self.offline:

@@ -352,3 +352,38 @@ def test_started_at_is_opt_in_and_boolean():
     assert extended["workload"]["started_at"].endswith("123456789Z")
     with pytest.raises(HostSessionError):
         runtime.invoke("host", {"action": "workload-inspect", "name": "head", "include_start_time": "true"})
+
+
+def test_relay_feedback_crosses_manager_callback_thread(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from sparkrun.core.operation import OperationState, operation_scope
+    from sparkrun.core import image_distribution as images
+    from sparkrun.feedback import get_feedback
+    from sparkrun.plugins.oci_relay.progress import Progress
+
+    seen = []
+
+    def pull(request):
+        reporter = Progress(request.image, feedback=request.feedback)
+        reporter.close(True, False)
+        return images.ImageCopyResult(dict.fromkeys(request.targets, "complete"))
+
+    monkeypatch.setattr(images, "_PROVIDERS", {"test": SimpleNamespace(copy=pull, pull=pull)})
+    errors = []
+    with operation_scope(state=OperationState(events=seen.append)):
+        runtime = DockerManagerRuntime(object(), config={}, feedback=get_feedback("coldsnap"))
+
+        def invoke():
+            try:
+                runtime.invoke("node-a", {"action": "image-pull", "image": "org/image:test"})
+            except Exception as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=invoke)
+        thread.start()
+        thread.join()
+    assert not errors
+    assert len(seen) == 2
+    assert all(event["source"] == "oci-relay" for event in seen)
+    assert seen[-1]["status"] == "succeeded"
