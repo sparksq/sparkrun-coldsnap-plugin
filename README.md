@@ -25,16 +25,44 @@ for version history and [versions.yaml](versions.yaml) for plugin and controller
 pins.
 
 This repository is the canonical development home of sparkrun's first-party
-ColdSnap integration. Released sparkrun distributions vendor an immutable
-snapshot of this repository; they do not clone or install it at build time or
-runtime.
+ColdSnap integration. Install it with sparkrun's plugin manager, or vendor it
+in a compatible distribution as `sparkrun.plugins.coldsnap`.
+
+## Install and enable ColdSnap
+
+Requires Sparkrun 0.4.0 or later in the 0.4.x line (`>=0.4.0,<0.5`). Install
+and enable the plugin with Sparkrun's plugin manager:
+
+```sh
+sparkrun plugins add https://github.com/sparksq/sparkrun-coldsnap-plugin --enable
+sparkrun plugins list
+```
+
+Installation asks you to trust the source and enables `core.external_plugins`
+if needed. `--enable` also enables the plugin's `plugins.coldsnap` feature flag.
+Add `--trust` to explicitly accept source trust without prompting. No separate
+`pip install` or manual copying is needed.
+
+The default ref is `main`; use `--ref <tag-or-commit>` when adding the plugin to
+pin a specific revision. Managed plugin installations are independent of the
+Sparkrun installation. To update a plugin tracking `main`:
+
+```sh
+sparkrun plugins update coldsnap
+```
+
+Sparkrun checks compatibility before activating an installation or update.
+Tags and full commit IDs stay pinned during updates. Installing the plugin
+does not capture or launch a workload; follow the
+[preview setup and first-run guide](DEV_PREVIEW.md) to prepare and use ColdSnap.
 
 ## Sparkrun integration
 
 The plugin is imported by sparkrun as `sparkrun.plugins.coldsnap` and remains
-subject to sparkrun's `plugins.coldsnap` feature gate. The source repository
-and exact commit included by a sparkrun release are recorded in that release's
-`vendor/coldsnap.lock` and packaged `VENDORED.toml` files.
+subject to sparkrun's `plugins.coldsnap` feature gate. `sparkrun plugins list`
+shows the installed plugin's source, version, state, and compatibility. For
+distributions that vendor ColdSnap, the source repository and exact commit are
+recorded in `vendor/coldsnap.lock` and packaged `VENDORED.toml` files.
 
 When the host supports plugin-declared registry overlays, enabling this plugin
 also contributes the recipes from
@@ -52,8 +80,8 @@ sparkrun registry commands.
 
 ## Host compatibility
 
-The plugin targets Sparkrun 0.4.0 alpha and newer, with the package range
-`>=0.4.0,<0.5` declared in
+The plugin requires Sparkrun 0.4.0 or later in the 0.4.x line, with the package
+range `>=0.4.0,<0.5` declared in
 [plugin.toml](plugin.toml) and [pyproject.toml](pyproject.toml). The plugin declares
 API version 1. Capture requires the shared
 `core.image_preparation.stage_prepared_images`/`StagedImageSet` contract to stage
@@ -245,9 +273,11 @@ python scripts/update-versions.py
 python scripts/update-versions.py --check
 ```
 
-Changes are made and tested here first. sparkrun then imports an approved full
-commit with its `scripts/vendor-coldsnap.py` command. Files in sparkrun's
-vendored source and test directories should not be edited directly.
+Changes are made and tested here first. Users install and update the plugin
+with `sparkrun plugins add` and `sparkrun plugins update`. Distributions that
+vendor ColdSnap can import an approved full commit with
+`scripts/vendor-coldsnap.py`. Files in sparkrun's vendored source and test
+directories should not be edited directly.
 
 ## CI and releases
 
@@ -288,8 +318,9 @@ the runtime builder share this immutable pin; version synchronization does not
 update it. Verify acquisition against the published release before tagging the
 plugin.
 
-Sparkrun's commit-pinned vendoring remains the supported
-distribution path; GitHub release assets do not replace that approval process.
+Sparkrun's plugin manager installs directly from this Git repository. GitHub
+release wheels and source archives are also available for inspection and
+packaging; compatible distributions can continue to vendor an approved commit.
 
 ## Controller acquisition
 
