@@ -83,7 +83,7 @@ class RecipeEnvironment:
             "num_nodes": len(self.plan.host_list),
             "node_rank": self.plan.host_list.index(host),
             "node_host": host,
-            "cluster_id": self.plan.cluster_id,
+            "cluster_id": self.plan.workload_id,
         }
 
     def _identity(self, host):

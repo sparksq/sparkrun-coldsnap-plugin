@@ -106,7 +106,7 @@ def build_request(
         raise ValueError("ColdSnap requires digest-pinned per-unit OCI images; unpinned unit(s): %s" % ", ".join(unpinned))
     if operation_id and not _VALID_OPERATION_ID.fullmatch(operation_id):
         raise ValueError("ColdSnap operation_id must contain 1-128 safe identifier characters")
-    request_id = operation_id or _request_id(plan.cluster_id, operation)
+    request_id = operation_id or _request_id(plan.workload_id, operation)
     if snapshot_driver not in {"n580", "n610"}:
         raise ValueError("snapshot_driver must be n580 or n610")
     mode = weight_mode if weight_mode is not None else config.weight_mode
@@ -195,7 +195,7 @@ def build_request(
         "policy": policy,
         "lifecycle": {"activation_state": activation_state},
         "workload": {
-            "cluster_id": workload_cluster_id or plan.cluster_id,
+            "cluster_id": workload_cluster_id or plan.workload_id,
             "intent_id": plan.intent_id,
             "recipe": getattr(plan.recipe, "qualified_name", None) or plan.recipe.name,
             "runtime": plan.runtime.runtime_name,

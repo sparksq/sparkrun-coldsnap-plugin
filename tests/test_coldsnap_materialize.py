@@ -85,21 +85,21 @@ def test_temporary_runs_allocate_ids_before_launch_without_changing_artifact_ide
     ids, stops = [], []
 
     def run(actual, *, plan, sctx):
-        assert actual.cluster_id_override == plan.cluster_id
+        assert actual.workload_id_override == plan.workload_id
         assert not actual.follow and actual.detached
         assert plan.intent_id == "b" * 16
         assert plan.recipe is options.recipe
-        ids.append(plan.cluster_id)
-        return SimpleNamespace(rc=0, cluster_id=plan.cluster_id)
+        ids.append(plan.workload_id)
+        return SimpleNamespace(rc=0, workload_id=plan.workload_id)
 
     monkeypatch.setattr(api, "run", run)
     monkeypatch.setattr(api, "stop", lambda **kw: stops.append(kw) or SimpleNamespace(success=True))
     for _ in range(2):
         _run_materialization_workload(options, plan=plan, sctx=sctx, description="verification")
-    assert len(set(ids)) == 2 and plan.cluster_id not in ids
-    assert options.cluster_id_override is None and options.follow
+    assert len(set(ids)) == 2 and plan.workload_id not in ids
+    assert options.workload_id_override is None and options.follow
     assert plan.placement_token == "c" * 12
-    assert [stop["cluster_id"] for stop in stops] == ids
+    assert [stop["workload_id"] for stop in stops] == ids
     assert all(stop["hosts"] == plan.host_list and stop["cluster"] is plan.cluster for stop in stops)
     assert all(stop["cache_dir"] == str(sctx.config.cache_dir) for stop in stops)
     assert saved.read_bytes() == b"preserve this asset"
@@ -113,13 +113,13 @@ def test_temporary_run_cleanup_preserves_primary_failure_and_cancellation(monkey
     primary = {"exception": RuntimeError("preparation failed"), "interrupt": KeyboardInterrupt(), "exit": SystemExit(7)}
 
     def run(options, *, plan, sctx):
-        launched.append(plan.cluster_id)
+        launched.append(plan.workload_id)
         if failure in primary:
             raise primary[failure]
-        return SimpleNamespace(rc=23 if failure == "rc" else 0, cluster_id="unrelated-job" if failure == "identity" else plan.cluster_id)
+        return SimpleNamespace(rc=23 if failure == "rc" else 0, workload_id="unrelated-job" if failure == "identity" else plan.workload_id)
 
     def stop(**kwargs):
-        stopped.append(kwargs["cluster_id"])
+        stopped.append(kwargs["workload_id"])
         if cleanup == "exception":
             raise RuntimeError("SSH cleanup failed")
         return SimpleNamespace(success=cleanup is None, errors=("SSH cleanup failed",))
@@ -144,7 +144,7 @@ def test_temporary_run_cleanup_preserves_primary_failure_and_cancellation(monkey
             message = str(caught.value) + capsys.readouterr().err
             assert "cleanup failed" in message and "SSH cleanup failed" in message
             assert launched[0] in message
-    assert stopped == launched and plan.cluster_id not in stopped and "unrelated-job" not in stopped
+    assert stopped == launched and plan.workload_id not in stopped and "unrelated-job" not in stopped
 
 
 @pytest.mark.parametrize(
@@ -171,11 +171,11 @@ def test_vllm_materialize_stops_every_restore_including_reused_assets(monkeypatc
 
     def run(options, *, plan, sctx):
         events.append("native" if options.strategy_options["materialize_native"] == "required" else "verify")
-        ids.append(plan.cluster_id)
-        return SimpleNamespace(rc=0, cluster_id=plan.cluster_id)
+        ids.append(plan.workload_id)
+        return SimpleNamespace(rc=0, workload_id=plan.workload_id)
 
     def stop(**kwargs):
-        assert kwargs["cluster_id"] == ids[-1] != plan.cluster_id
+        assert kwargs["workload_id"] == ids[-1] != plan.workload_id
         events.append("stop")
         return SimpleNamespace(success=True)
 

@@ -12,7 +12,7 @@ It passes the expected workload and capture IDs to ColdSnap's existing lifecycle
 service. Receipt verification, checkpointing and restore remain ColdSnap behavior;
 the host handles caller ownership, exact revision, reservations and recovery.
 
-The result contains `state`, `cluster_id` and `capture_id`. The host rejects a
+The result contains `state`, `workload_id` and `capture_id`. The host rejects a
 provider response for another workload and keeps pending state when an action
 fails. Provider feedback uses the supplied operation context, so daemon job events
 retain structured progress and operation-scoped log forwarding.

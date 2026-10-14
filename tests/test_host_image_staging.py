@@ -115,9 +115,9 @@ def test_capture_uses_host_same_id_replacement_when_supported(monkeypatch):
 
     _, _, plan, sctx = _setup()
     supports_current = "include_current" in signature(host_run._evict_superseded_deployments).parameters
-    evict = create_autospec(host_run._evict_superseded_deployments, return_value=([plan.cluster_id], None))
+    evict = create_autospec(host_run._evict_superseded_deployments, return_value=([plan.workload_id], None))
     monkeypatch.setattr(host_run, "_evict_superseded_deployments", evict)
-    assert replace_capture_workload(plan=plan, sctx=sctx) == (plan.cluster_id,)
+    assert replace_capture_workload(plan=plan, sctx=sctx) == (plan.workload_id,)
     kwargs = evict.call_args.kwargs
     assert kwargs["strict"] and kwargs["intent_id"] == plan.intent_id
     assert kwargs["target_hosts"] == list(plan.host_list)

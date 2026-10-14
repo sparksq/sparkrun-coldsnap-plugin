@@ -38,12 +38,12 @@ def control_job(operation: str, job, *, sctx):
         sctx=sctx,
         artifact=str(runtime.get("artifact") or ""),
         snapshot_driver=runtime.get("snapshot_driver") or None,
-        expected_cluster_id=job.cluster_id,
+        expected_cluster_id=job.workload_id,
         expected_capture_id=runtime["capture_id"],
     )
     if report is None:
         raise RuntimeError("ColdSnap lifecycle control returned no activation report")
-    return {"state": report["state"], "cluster_id": report["cluster_id"], "capture_id": report["capture_id"]}
+    return {"workload_id": job.workload_id, "state": report["state"], "capture_id": report["capture_id"]}
 
 
 def matches_job(job):

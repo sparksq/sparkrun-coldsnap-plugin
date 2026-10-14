@@ -109,7 +109,7 @@ def _setup():
         placement=placement,
         intent_id="b" * 16,
         placement_token="c" * 12,
-        cluster_id="sparkrun_%s_%s" % ("b" * 16, "c" * 12),
+        workload_id="sparkrun_%s_%s" % ("b" * 16, "c" * 12),
     )
     options = api.RunOptions(recipe=recipe, hosts=("h1", "h2"), init_port=29731)
     sctx = SimpleNamespace(
@@ -542,7 +542,7 @@ def test_build_request_uses_resolved_unit_commands_without_profile_file():
     }
     assert request["policy"]["compatibility"] == {"enforce_captured_driver_floor": False}
     assert request["workload"] == {
-        "cluster_id": plan.cluster_id,
+        "cluster_id": plan.workload_id,
         "intent_id": plan.intent_id,
         "recipe": plan.recipe.qualified_name,
         "runtime": "vllm-distributed",
@@ -1161,7 +1161,7 @@ def test_lifecycle_cli_uses_exact_service_operation(monkeypatch, operation, stat
             "kind": "coldsnap-inference-lifecycle",
             "engine": "vllm",
             "state": state,
-            "cluster_id": plan.cluster_id,
+            "cluster_id": plan.workload_id,
             "capture_id": "capture",
             "seconds": 1.25,
         }
@@ -1186,7 +1186,7 @@ def test_coldsnap_cli_can_suppress_timing_output(monkeypatch):
         "sparkrun.plugins.coldsnap.service.ColdSnapService.execute_lifecycle",
         lambda *_args, **_kwargs: (
             {"id": "request"},
-            {"state": "warm", "cluster_id": plan.cluster_id, "capture_id": "capture", "seconds": 0.1},
+            {"state": "warm", "cluster_id": plan.workload_id, "capture_id": "capture", "seconds": 0.1},
         ),
     )
 
@@ -1386,7 +1386,7 @@ def test_sglang_lifecycle_follows_materialized_capture_but_respects_explicit_art
         "sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts",
         lambda *args, **kwargs: SimpleNamespace(verified=True, snapshot_driver=driver, hardware={}),
     )
-    monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *args, **kwargs: plan.cluster_id)
+    monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *args, **kwargs: plan.workload_id)
 
     def invoke(self, request, **kwargs):
         assert request["artifact"] == str(expected)
@@ -1398,7 +1398,7 @@ def test_sglang_lifecycle_follows_materialized_capture_but_respects_explicit_art
                     "engine": "sglang",
                     "operation_id": request["id"],
                     "operation": operation,
-                    "cluster_id": plan.cluster_id,
+                    "cluster_id": plan.workload_id,
                     "capture_id": expected.stem,
                     "snapshot_driver": driver,
                     "state": "running",
@@ -1440,11 +1440,11 @@ def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypat
         assert options.strategy_options["materialize_native"] == "off"
         assert options.strategy_options["weights"] == ("recovery" if native == "off" else "native")
         events.append("verify")
-        assert options.cluster_id_override == kwargs["plan"].cluster_id != plan.cluster_id
-        return SimpleNamespace(rc=0, cluster_id=options.cluster_id_override)
+        assert options.workload_id_override == kwargs["plan"].workload_id != plan.workload_id
+        return SimpleNamespace(rc=0, workload_id=options.workload_id_override)
 
     def stop(**kwargs):
-        assert kwargs["cluster_id"] != plan.cluster_id
+        assert kwargs["workload_id"] != plan.workload_id
         assert kwargs["hosts"] == plan.host_list
         events.append("cleanup")
         return SimpleNamespace(success=True)
@@ -3290,7 +3290,7 @@ def test_coldsnap_prepare_only_receipt_precedes_activation(tmp_path, monkeypatch
     activation_context = ActivationContext(
         execution=execution,
         prepared=prepared,
-        cluster_id=plan.cluster_id,
+        cluster_id=plan.workload_id,
         hosts=plan.host_list,
         container_image=prepared.assets.images_by_node[0],
         images_by_node=prepared.assets.images_by_node,
@@ -3445,7 +3445,7 @@ def test_job_control_uses_saved_recipe_and_exact_activation_receipt(monkeypatch)
 
     recipe, _, plan, sctx = _setup()
     job = SimpleNamespace(
-        cluster_id="exact-job",
+        workload_id="exact-job",
         hosts=tuple(plan.host_list),
         metadata={
             "cluster": "lab",
@@ -3472,7 +3472,9 @@ def test_job_control_uses_saved_recipe_and_exact_activation_receipt(monkeypatch)
 
     monkeypatch.setattr("sparkrun.api.plan", planning)
     monkeypatch.setattr(ColdSnapService, "execute_lifecycle", execute)
-    assert control_job("sleep", job, sctx=sctx)["state"] == "sleeping"
+    result = control_job("sleep", job, sctx=sctx)
+    assert result["state"] == "sleeping"
+    assert result["workload_id"] == "exact-job"
     assert captured["expected_cluster_id"] == "exact-job"
     assert captured["expected_capture_id"] == "exact-capture"
     assert captured["artifact"] == "/test/committed.json"

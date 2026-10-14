@@ -515,13 +515,13 @@ def _run_materialization_workload(options, *, plan, sctx, description):
     from sparkrun.orchestration.job_metadata import generate_cluster_id, generate_placement_token
 
     token = generate_placement_token()
-    cluster_id = generate_cluster_id(plan.intent_id, token)
-    plan = replace(plan, cluster_id=cluster_id, placement_token=token)
-    options = replace(options, cluster_id_override=cluster_id, detached=True, follow=False)
+    workload_id = generate_cluster_id(plan.intent_id, token)
+    plan = replace(plan, workload_id=workload_id, placement_token=token)
+    options = replace(options, workload_id_override=workload_id, detached=True, follow=False)
     failure = None
     try:
         result = api.run(options, plan=plan, sctx=sctx)
-        if getattr(result, "cluster_id", cluster_id) != cluster_id:
+        if getattr(result, "workload_id", workload_id) != workload_id:
             raise RuntimeError("ColdSnap temporary workload returned an unexpected launch identity")
         if result.rc:
             raise RuntimeError("ColdSnap %s failed with exit code %d" % (description, result.rc))
@@ -529,13 +529,13 @@ def _run_materialization_workload(options, *, plan, sctx, description):
         failure = error
         raise
     finally:
-        click.echo("ColdSnap: stopping temporary materialization workload %s" % cluster_id)
+        click.echo("ColdSnap: stopping temporary materialization workload %s" % workload_id)
         try:
             # stop.cache_dir is the manager's metadata cache, not the model
             # cache configured by RunOptions.cache_dir.
             cache_dir = getattr(sctx.config, "cache_dir", None)
             stopped = api.stop(
-                cluster_id=cluster_id,
+                workload_id=workload_id,
                 hosts=plan.host_list,
                 cluster=plan.cluster,
                 cache_dir=str(cache_dir) if cache_dir is not None else None,
@@ -545,7 +545,7 @@ def _run_materialization_workload(options, *, plan, sctx, description):
                 detail = "; ".join(stopped.errors) or "teardown was not confirmed on every host"
                 raise RuntimeError(detail)
         except Exception as cleanup_error:
-            message = "ColdSnap temporary workload cleanup failed for %s: %s" % (cluster_id, cleanup_error)
+            message = "ColdSnap temporary workload cleanup failed for %s: %s" % (workload_id, cleanup_error)
             if failure is None:
                 raise RuntimeError(message) from cleanup_error
             if isinstance(failure, Exception):

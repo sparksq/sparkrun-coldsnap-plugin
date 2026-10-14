@@ -78,7 +78,7 @@ def test_capture_and_restore_templates_use_artifact_without_host_cache(monkeypat
     plan = replace(
         plan,
         host_list=("new1", "new2"),
-        cluster_id="new-cluster",
+        workload_id="new-cluster",
         placement=RankAssignment(by_rank=(RankSlot("new1", 0), RankSlot("new2", 0)), hosts_used=("new1", "new2")),
     )
     restored = build_request("restore", options, plan=plan, sctx=sctx, artifact=path, snapshot_driver=driver, weight_mode="native")
@@ -108,7 +108,7 @@ def test_restore_rejects_changed_declared_inputs_or_bound_placement(tmp_path, ch
             placement=RankAssignment(by_rank=(RankSlot("new1", 0), RankSlot("new2", 0)), hosts_used=("new1", "new2")),
         )
     else:
-        plan = replace(plan, cluster_id="different")
+        plan = replace(plan, workload_id="different")
     with pytest.raises(ValueError, match="recapture"):
         build_request("restore", options, plan=plan, sctx=sctx, artifact=path)
 

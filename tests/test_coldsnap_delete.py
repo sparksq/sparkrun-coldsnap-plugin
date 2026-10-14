@@ -52,7 +52,7 @@ def _setup(tmp_path: Path):
         placement=placement,
         intent_id="b" * 16,
         placement_token="c" * 12,
-        cluster_id="sparkrun_%s_%s" % ("b" * 16, "c" * 12),
+        workload_id="sparkrun_%s_%s" % ("b" * 16, "c" * 12),
     )
     options = api.RunOptions(recipe=recipe, hosts=("h1", "h2"))
     sctx = SimpleNamespace(

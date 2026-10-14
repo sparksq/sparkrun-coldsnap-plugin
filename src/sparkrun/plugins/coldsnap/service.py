@@ -109,7 +109,7 @@ def replace_capture_workload(*, plan, sctx) -> tuple[str, ...]:
         replacement_options["include_current"] = True
     evicted, _observed = _evict_superseded_deployments(
         intent_id=plan.intent_id,
-        cluster_id_for_launch=plan.cluster_id,
+        cluster_id_for_launch=plan.workload_id,
         candidate_hosts=list(plan.candidate_hosts),
         target_hosts=list(plan.host_list),
         cluster_def=plan.cluster,
@@ -323,7 +323,7 @@ class ColdSnapService:
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise RuntimeError("read committed ColdSnap artifact %s: %s" % (artifact_path, error)) from error
-        diag = diagnostics.bind(sctx=context.sctx, workload_id=context.plan.cluster_id)
+        diag = diagnostics.bind(sctx=context.sctx, workload_id=context.plan.workload_id)
         if diag is not None and diag.enabled:
             diag.snapshot(
                 "artifact_selection",
@@ -770,20 +770,20 @@ class ColdSnapService:
                     local = None
                 if local is not None:
                     artifact_path = local
-        cluster_id = plan.cluster_id
+        workload_id = plan.workload_id
         if not render_only:
             from sparkrun.api._resolve import discover_cluster_id_by_intent
 
             cluster_hosts = list(getattr(plan.cluster, "hosts", ()) or plan.host_list)
             with timed(timeline, "coldsnap.workload", operation=operation):
-                cluster_id = discover_cluster_id_by_intent(
+                workload_id = discover_cluster_id_by_intent(
                     plan.intent_id,
                     cluster_hosts,
                     cluster_def=plan.cluster,
                     cache_dir=options.cache_dir,
                     sctx=sctx,
                 )
-        if expected_cluster_id and cluster_id != expected_cluster_id:
+        if expected_cluster_id and workload_id != expected_cluster_id:
             raise RuntimeError("ColdSnap lifecycle resolved a different job; refusing to control it")
         request = build_request(
             operation,
@@ -792,7 +792,7 @@ class ColdSnapService:
             sctx=sctx,
             artifact=str(artifact_path),
             snapshot_driver=snapshot_driver,
-            workload_cluster_id=cluster_id,
+            workload_cluster_id=workload_id,
             defer_environment=render_only,
         )
         if render_only:
@@ -827,7 +827,7 @@ class ColdSnapService:
             or report.get("engine") != request["launch"]["engine"]
             or report.get("operation_id") != request["id"]
             or report.get("operation") != operation
-            or report.get("cluster_id") != cluster_id
+            or report.get("cluster_id") != workload_id
             or report.get("capture_id") != expected_capture
             or report.get("snapshot_driver") != snapshot_driver
             or report.get("state") not in {"running", "sleeping", "warm", "failed"}

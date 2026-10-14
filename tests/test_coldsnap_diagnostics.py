@@ -88,7 +88,7 @@ def test_artifact_compatibility_decision_is_captured(diagnostic_context, tmp_pat
         service_module, "build_request", lambda *args, **kwargs: {"artifact": str(artifact_path), "launch": {"engine": "vllm"}}
     )
     monkeypatch.setattr(service_module, "resolve_request_weight_mode", lambda request: "auto")
-    context = SimpleNamespace(sctx=diagnostic_context, plan=SimpleNamespace(cluster_id="workload"), options=SimpleNamespace(dry_run=False))
+    context = SimpleNamespace(sctx=diagnostic_context, plan=SimpleNamespace(workload_id="workload"), options=SimpleNamespace(dry_run=False))
     path = tmp_path / "artifact.ndjson"
     with pytest.raises(RuntimeError, match="snapshot driver") if driver == "n580" else nullcontext():
         with api.capture_diagnostics(path, sctx=diagnostic_context):
