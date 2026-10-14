@@ -19,8 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from sparkrun.core.config import resolve_sparkrun_cache_dir
-from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint, generate_intent_id
+from sparkrun.plugins import derive_recipe_fingerprint, generate_intent_id, resolve_sparkrun_cache_dir
 
 try:
     import fcntl

@@ -478,7 +478,7 @@ def _begin_operation_timing(sctx, operation, *, dry_run, show_timings):
     """Share idempotent span completion across explicit manager operations."""
     import click
 
-    from sparkrun.core.timing import Timeline
+    from sparkrun.plugins import Timeline
 
     if not dry_run and getattr(sctx, "timing", None) is None:
         sctx.timing = Timeline()
@@ -575,7 +575,7 @@ def _materialize(
 
     import sparkrun.api as api
     from sparkrun.api import default_sctx
-    from sparkrun.core.timing import STATUS_ERROR
+    from sparkrun.plugins import STATUS_ERROR
     from sparkrun.plugins.coldsnap.compatibility import verify_coldsnap_hosts
 
     sctx = default_sctx()
@@ -806,7 +806,7 @@ def _run(
 
     import sparkrun.api as api
     from sparkrun.api import default_sctx
-    from sparkrun.core.timing import STATUS_ERROR
+    from sparkrun.plugins import STATUS_ERROR
 
     sctx = default_sctx()
     finish_timing = _begin_operation_timing(sctx, operation, dry_run=dry_run, show_timings=show_timings)

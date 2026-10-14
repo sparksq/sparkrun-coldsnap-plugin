@@ -13,12 +13,13 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from sparkrun.plugins import (
+    HostCommandResult,
+    HostSessionError,
     has_image_distribution_provider,
     image_distribution_operation,
     resolve_distributed_image,
     try_image_pull,
 )
-from sparkrun.transports.session import HostCommandResult, HostSessionError
 
 from .runtime_contract import validate_runtime_request
 

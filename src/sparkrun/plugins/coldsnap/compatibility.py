@@ -12,14 +12,14 @@ import logging
 import re
 from typing import TYPE_CHECKING, Mapping
 
-from sparkrun.core.hardware import HostHardware
 from sparkrun.core.hardware_probe import probe_hosts
 from sparkrun.core.progress import PROGRESS
 from sparkrun.orchestration.primitives import build_ssh_kwargs
+from sparkrun.plugins import HostHardware
 
 if TYPE_CHECKING:
     from sparkrun.api import RunPlan
-    from sparkrun.core.context import SparkrunContext
+    from sparkrun.plugins import SparkrunContext
 
 
 SNAPSHOT_DRIVER_N580 = "n580"

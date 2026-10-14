@@ -21,18 +21,18 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 
-from sparkrun.core.config import resolve_hf_token
-from sparkrun.core.execution import (
+from sparkrun.plugins import (
     ActivationContext,
     ActivationResult,
     ExecutionContext,
     LaunchAssetPolicy,
     PreparationStep,
     PreparedExecution,
+    resolve_hf_token,
+    timed,
 )
 from . import diagnostics
 from .feedback import reporter, progress as report_progress
-from sparkrun.core.timing import timed
 from sparkrun.plugins.coldsnap.environment import validate_environment_recipe
 from sparkrun.plugins.coldsnap.artifacts import promote_generation, resolve_artifact_store, resolve_generation_limit
 from sparkrun.plugins.coldsnap.compatibility import (
@@ -95,31 +95,80 @@ def replace_capture_workload(*, plan, sctx) -> tuple[str, ...]:
     """Strictly replace an overlapping deployment immediately before capture.
 
     Image/model/cache preparation is intentionally complete by this point.
-    ColdSnap capture launches host-network containers itself, outside the
-    normal launcher ``before_start`` hook, so leaving an earlier deployment
-    alive would make rank 0 fail its service-port bind and leave rank 1 waiting
-    for the full capture timeout.
-    """
-    from sparkrun.api._run import _evict_superseded_deployments
+    ColdSnap capture launches host-network containers itself, outside
+    ``launch_inference`` and therefore outside the core replacement barrier
+    (its ``before_start`` eviction), so leaving an earlier deployment alive
+    would make rank 0 fail its service-port bind and leave rank 1 waiting for
+    the full capture timeout.
 
-    replacement_options = {"strict": True}
-    if "include_current" in signature(_evict_superseded_deployments).parameters:
-        # Capture submits its own containers instead of invoking the ordinary
-        # runtime's same-ID cleanup. 0.4 exposes that replacement explicitly.
-        replacement_options["include_current"] = True
-    evicted, _observed = _evict_superseded_deployments(
-        intent_id=plan.intent_id,
-        cluster_id_for_launch=plan.workload_id,
-        candidate_hosts=list(plan.candidate_hosts),
-        target_hosts=list(plan.host_list),
-        cluster_def=plan.cluster,
-        config=sctx.config,
-        sctx=sctx,
-        **replacement_options,
-    )
+    Mirrors the core eviction policy through public ``sparkrun.api`` calls:
+    same intent only, only deployments overlapping the capture hosts, each torn
+    down across every candidate host it occupies, and the plan's own
+    ``workload_id`` included (capture never runs the runtime's same-ID
+    cleanup). Strict: an unverifiable status or teardown aborts the capture.
+    """
+    import sparkrun.api as api
+
+    candidate_hosts = list(plan.candidate_hosts)
+    try:
+        status = api.status(candidate_hosts, cluster=plan.cluster, sctx=sctx)
+    except Exception as error:
+        raise RuntimeError("could not query cluster status before workload replacement: %s" % error) from error
+    if status.observation_errors:
+        raise RuntimeError("could not query cluster status before workload replacement: %s" % status.observation_errors)
+    match = api.find_running_intent(plan.intent_id, candidate_hosts, cluster=plan.cluster, sctx=sctx, status=status)
+    if match is None:
+        return ()
+    matched = {match.workload_id, *match.other_cluster_ids}
+    targets = set(plan.host_list)
+    occupied: dict[str, list[str]] = {}
+    for entry in status.hosts:
+        for workload in entry.workloads:
+            if workload.cluster_id in matched:
+                hosts = occupied.setdefault(workload.cluster_id, [])
+                if entry.host not in hosts:
+                    hosts.append(entry.host)
+    evicted: list[str] = []
+    for workload_id, hosts in occupied.items():
+        if targets.isdisjoint(hosts):
+            continue
+        logger.info("ColdSnap: replacing earlier deployment %s on %s", workload_id, ", ".join(hosts))
+        try:
+            result = api.stop(workload_id=workload_id, hosts=hosts, cluster=plan.cluster, discovered=status, sctx=sctx)
+        except Exception as error:
+            raise RuntimeError("could not stop earlier deployment %s: %s" % (workload_id, error)) from error
+        if result.hosts_failed:
+            raise RuntimeError("teardown of earlier deployment %s was not confirmed on %s" % (workload_id, ", ".join(result.hosts_failed)))
+        evicted.append(workload_id)
     if evicted:
         report_progress(logger, "capture.replace", "ColdSnap: replaced %d active workload(s) before capture", len(evicted), sctx=sctx)
     return tuple(evicted)
+
+
+def resolve_running_workload(intent_id: str, hosts, *, cluster, sctx) -> str:
+    """Return the one running workload of *intent_id*, verified across *hosts*.
+
+    Lifecycle control acts on a live job, so absence and uniqueness must be
+    observed rather than assumed: every host has to answer, and more than one
+    matching deployment is refused instead of picking one.
+    """
+    import sparkrun.api as api
+
+    hosts = list(hosts)
+    status = api.status(hosts, cluster=cluster, sctx=sctx)
+    unavailable = sorted((set(hosts) - {entry.host for entry in status.hosts}) | set(status.observation_errors))
+    if unavailable:
+        raise api.SparkrunError("Cannot determine running workloads: status unavailable for %s" % ", ".join(unavailable))
+    match = api.find_running_intent(intent_id, hosts, cluster=cluster, sctx=sctx, status=status)
+    if match is None:
+        raise api.JobNotFound("No running workload matches intent %s on hosts %s" % (intent_id, hosts))
+    if match.other_cluster_ids:
+        workload_ids = sorted((match.workload_id, *match.other_cluster_ids))
+        raise api.AmbiguousWorkload(
+            "Multiple workloads match this recipe/intent on hosts %s: %s. Re-invoke with an explicit cluster_id." % (hosts, workload_ids),
+            workload_ids=workload_ids,
+        )
+    return match.workload_id
 
 
 def prepare_capture_images(options, *, plan, sctx, snapshot_driver: str):
@@ -772,17 +821,9 @@ class ColdSnapService:
                     artifact_path = local
         workload_id = plan.workload_id
         if not render_only:
-            from sparkrun.api._resolve import discover_cluster_id_by_intent
-
             cluster_hosts = list(getattr(plan.cluster, "hosts", ()) or plan.host_list)
             with timed(timeline, "coldsnap.workload", operation=operation):
-                workload_id = discover_cluster_id_by_intent(
-                    plan.intent_id,
-                    cluster_hosts,
-                    cluster_def=plan.cluster,
-                    cache_dir=options.cache_dir,
-                    sctx=sctx,
-                )
+                workload_id = resolve_running_workload(plan.intent_id, cluster_hosts, cluster=plan.cluster, sctx=sctx)
         if expected_cluster_id and workload_id != expected_cluster_id:
             raise RuntimeError("ColdSnap lifecycle resolved a different job; refusing to control it")
         request = build_request(

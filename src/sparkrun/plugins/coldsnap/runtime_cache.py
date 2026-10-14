@@ -24,9 +24,9 @@ from sparkrun.core.runtime_cache import (
     resolve_runtime_cache_settings,
     runtime_cache_disabled_by_env,
 )
-from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
 from sparkrun.orchestration.primitives import build_ssh_kwargs
 from sparkrun.orchestration.ssh import run_remote_script
+from sparkrun.plugins import derive_recipe_fingerprint
 from sparkrun.utils.shell import quote
 
 

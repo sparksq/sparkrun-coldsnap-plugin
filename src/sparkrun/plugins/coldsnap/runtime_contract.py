@@ -11,7 +11,7 @@ import base64
 import posixpath
 from collections.abc import Mapping
 
-from sparkrun.transports.session import HostSessionError
+from sparkrun.plugins import HostSessionError
 
 
 def _text(value):

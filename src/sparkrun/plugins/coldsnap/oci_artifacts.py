@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
-from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
+from sparkrun.plugins import derive_recipe_fingerprint
 from sparkrun.plugins.coldsnap.config import ColdSnapRecipe
 
 RunCommand = Callable[..., subprocess.CompletedProcess]
@@ -394,10 +394,15 @@ def _resolved_reference(raw: str, *, docker: str, run_command: RunCommand) -> st
     repository = raw.split("@", 1)[0]
     if ":" in repository.rsplit("/", 1)[-1]:
         repository = repository.rsplit(":", 1)[0]
+
     def canonical(value):
         return value.removeprefix("docker.io/").removeprefix("index.docker.io/")
-    digests = [item for item in digests if canonical(item.rpartition("@")[0]) == canonical(repository)
-               and re.fullmatch(r"sha256:[0-9a-f]{64}", item.rpartition("@")[2])]
+
+    digests = [
+        item
+        for item in digests
+        if canonical(item.rpartition("@")[0]) == canonical(repository) and re.fullmatch(r"sha256:[0-9a-f]{64}", item.rpartition("@")[2])
+    ]
     if "@" in raw:
         expected = raw.rpartition("@")[2]
         matching = [item for item in digests if item.endswith("@" + expected)]
@@ -441,8 +446,12 @@ def _validate_committed_artifact(artifact: Any, *, snapshot_driver: str | None =
         seen_units.add(unit)
         reference = image.get("reference")
         digest = image.get("digest")
-        if (not isinstance(reference, str) or not isinstance(digest, str)
-                or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest) or not reference.endswith("@" + digest)):
+        if (
+            not isinstance(reference, str)
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+            or not reference.endswith("@" + digest)
+        ):
             raise RuntimeError("ColdSnap OCI descriptor capsules are not digest-pinned")
 
 

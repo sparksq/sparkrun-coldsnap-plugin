@@ -140,7 +140,7 @@ def _stage_payload_verifier(
 ) -> str:
     """Stage one content-addressed adapter binary on every payload host."""
 
-    from sparkrun.transports import open_cluster_host_session
+    from sparkrun.plugins import open_cluster_host_session
 
     source = Path(local_path).expanduser().resolve()
     if not source.is_file() or not os.access(source, os.X_OK):

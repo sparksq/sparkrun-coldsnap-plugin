@@ -22,11 +22,8 @@ from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, Self
 
-from sparkrun.core.config import resolve_hf_token
-from sparkrun.core.offline import resolve_offline
 from sparkrun.orchestration.primitives import build_ssh_kwargs
-from sparkrun.transports import open_cluster_host_session
-from sparkrun.transports.session import HostCommandResult, HostSessionError
+from sparkrun.plugins import HostCommandResult, HostSessionError, open_cluster_host_session, resolve_hf_token, resolve_offline
 
 from .manager_runtime import DockerManagerRuntime, RuntimeOperationError
 from .runtime_contract import validate_runtime_request

@@ -107,18 +107,88 @@ def test_capture_fails_if_one_host_cannot_resolve_its_prepared_image(monkeypatch
         prepare_capture_images(options, plan=plan, sctx=sctx, snapshot_driver="n580")
 
 
-def test_capture_uses_host_same_id_replacement_when_supported(monkeypatch):
-    from inspect import signature
-    from unittest.mock import create_autospec
-    import sparkrun.api._run as host_run
+def _status(hosts, *, errors=None):
+    entries = [
+        SimpleNamespace(host=host, workloads=[SimpleNamespace(cluster_id=cid, intent_id=intent) for cid, intent in workloads])
+        for host, workloads in hosts.items()
+    ]
+    return SimpleNamespace(hosts=entries, observation_errors=errors or {})
+
+
+def test_capture_replaces_overlapping_deployments_of_its_intent_only(monkeypatch):
+    from dataclasses import replace
+
+    import sparkrun.api as api
     from sparkrun.plugins.coldsnap.service import replace_capture_workload
 
     _, _, plan, sctx = _setup()
-    supports_current = "include_current" in signature(host_run._evict_superseded_deployments).parameters
-    evict = create_autospec(host_run._evict_superseded_deployments, return_value=([plan.workload_id], None))
-    monkeypatch.setattr(host_run, "_evict_superseded_deployments", evict)
-    assert replace_capture_workload(plan=plan, sctx=sctx) == (plan.workload_id,)
-    kwargs = evict.call_args.kwargs
-    assert kwargs["strict"] and kwargs["intent_id"] == plan.intent_id
-    assert kwargs["target_hosts"] == list(plan.host_list)
-    assert kwargs.get("include_current", False) is supports_current
+    plan = replace(plan, candidate_hosts=("h1", "h2", "h3"), host_list=("h1", "h2"))
+    previous = "sparkrun_%s_%s" % (plan.intent_id, "e" * 12)
+    elsewhere = "sparkrun_%s_%s" % (plan.intent_id, "f" * 12)
+    foreign = "sparkrun_%s_%s" % ("9" * 16, "e" * 12)
+    status = _status(
+        {
+            "h1": [(plan.workload_id, plan.intent_id), (foreign, "9" * 16)],
+            "h2": [(previous, None), (plan.workload_id, plan.intent_id)],
+            "h3": [(previous, None), (elsewhere, plan.intent_id)],
+        }
+    )
+    stops = []
+    monkeypatch.setattr(api, "status", lambda hosts, **kwargs: status if hosts == ["h1", "h2", "h3"] else pytest.fail(hosts))
+
+    def stop(**kwargs):
+        stops.append(kwargs)
+        return SimpleNamespace(hosts_failed=())
+
+    monkeypatch.setattr(api, "stop", stop)
+    # The plan's own id is replaced too: capture never runs the runtime's
+    # same-ID cleanup. A disjoint deployment and a foreign intent survive.
+    assert replace_capture_workload(plan=plan, sctx=sctx) == (plan.workload_id, previous)
+    assert [(call["workload_id"], call["hosts"]) for call in stops] == [
+        (plan.workload_id, ["h1", "h2"]),
+        (previous, ["h2", "h3"]),
+    ]
+    assert all(call["discovered"] is status and call["cluster"] is plan.cluster for call in stops)
+
+
+@pytest.mark.parametrize("failure", ["query", "observation", "teardown"])
+def test_capture_replacement_is_strict(monkeypatch, failure):
+    import sparkrun.api as api
+    from sparkrun.plugins.coldsnap.service import replace_capture_workload
+
+    _, _, plan, sctx = _setup()
+    status = _status({"h1": [(plan.workload_id, plan.intent_id)], "h2": []}, errors={"h2": "down"} if failure == "observation" else None)
+
+    def query(*_args, **_kwargs):
+        if failure == "query":
+            raise OSError("ssh refused")
+        return status
+
+    monkeypatch.setattr(api, "status", query)
+    monkeypatch.setattr(api, "stop", lambda **_kwargs: SimpleNamespace(hosts_failed=("h1",)))
+    with pytest.raises(RuntimeError, match="could not query|not confirmed on h1"):
+        replace_capture_workload(plan=plan, sctx=sctx)
+
+
+def test_lifecycle_resolves_exactly_one_observed_workload(monkeypatch):
+    import sparkrun.api as api
+    from sparkrun.plugins.coldsnap.service import resolve_running_workload
+
+    _, _, plan, sctx = _setup()
+    other = "sparkrun_%s_%s" % (plan.intent_id, "e" * 12)
+    snapshots = {
+        "one": _status({"h1": [(plan.workload_id, plan.intent_id)], "h2": [(plan.workload_id, None)]}),
+        "none": _status({"h1": [], "h2": []}),
+        "missing": _status({"h1": [(plan.workload_id, plan.intent_id)]}),
+        "ambiguous": _status({"h1": [(plan.workload_id, plan.intent_id)], "h2": [(other, plan.intent_id)]}),
+    }
+    for name, snapshot in snapshots.items():
+        monkeypatch.setattr(api, "status", lambda *_args, snapshot=snapshot, **_kwargs: snapshot)
+        if name == "one":
+            assert resolve_running_workload(plan.intent_id, ["h1", "h2"], cluster=plan.cluster, sctx=sctx) == plan.workload_id
+            continue
+        expected = {"none": api.JobNotFound, "missing": api.SparkrunError, "ambiguous": api.AmbiguousWorkload}[name]
+        with pytest.raises(expected) as raised:
+            resolve_running_workload(plan.intent_id, ["h1", "h2"], cluster=plan.cluster, sctx=sctx)
+        if name == "ambiguous":
+            assert raised.value.workload_ids == tuple(sorted((plan.workload_id, other)))

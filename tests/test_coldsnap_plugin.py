@@ -283,7 +283,7 @@ def test_payload_verifier_is_staged_once_per_data_host(tmp_path, monkeypatch):
     verifier.write_bytes(b"release-matched-adapter")
     verifier.chmod(0o755)
     session = _VerifierStageSession()
-    monkeypatch.setattr("sparkrun.transports.open_cluster_host_session", lambda *_args, **_kwargs: session)
+    monkeypatch.setattr("sparkrun.plugins.open_cluster_host_session", lambda *_args, **_kwargs: session)
 
     target = _stage_payload_verifier(
         verifier,
@@ -315,7 +315,7 @@ def test_payload_verifier_checks_remote_release_identity_even_on_cache_hit(tmp_p
     if warm:
         for host in plan.host_list:
             session.files[(host, target)] = verifier.read_bytes()
-    monkeypatch.setattr("sparkrun.transports.open_cluster_host_session", lambda *_args, **_kwargs: session)
+    monkeypatch.setattr("sparkrun.plugins.open_cluster_host_session", lambda *_args, **_kwargs: session)
 
     def stage():
         return _stage_payload_verifier(verifier, request=request, plan=plan, state_root="/cache/coldsnap", ssh_kwargs={})
@@ -337,7 +337,7 @@ def test_payload_verifier_repairs_root_owned_cache_and_retries(tmp_path, monkeyp
     verifier.chmod(0o755)
     session = _VerifierStageSession(fail_first_install=True)
     repairs = []
-    monkeypatch.setattr("sparkrun.transports.open_cluster_host_session", lambda *_args, **_kwargs: session)
+    monkeypatch.setattr("sparkrun.plugins.open_cluster_host_session", lambda *_args, **_kwargs: session)
     monkeypatch.setattr(
         "sparkrun.orchestration.sudo.ensure_remote_dir_ownership",
         lambda path, hosts, **kwargs: repairs.append((path, tuple(hosts), kwargs["resource_label"], kwargs["session"] is session)) or [],
@@ -366,7 +366,7 @@ def test_payload_verifier_reports_permission_fix_separately_from_ssh_warning(tmp
     verifier.write_bytes(b"release-matched-adapter")
     verifier.chmod(0o755)
     session = _VerifierStageSession(fail_all_installs=True)
-    monkeypatch.setattr("sparkrun.transports.open_cluster_host_session", lambda *_args, **_kwargs: session)
+    monkeypatch.setattr("sparkrun.plugins.open_cluster_host_session", lambda *_args, **_kwargs: session)
     monkeypatch.setattr(
         "sparkrun.orchestration.sudo.ensure_remote_dir_ownership",
         lambda *_args, **_kwargs: ["h1"],
@@ -1216,7 +1216,7 @@ def test_lifecycle_service_resolves_running_intent_before_control(monkeypatch, t
         lambda *_args, **_kwargs: SimpleNamespace(snapshot_driver="n610"),
     )
     monkeypatch.setattr(
-        "sparkrun.api._resolve.discover_cluster_id_by_intent",
+        "sparkrun.plugins.coldsnap.service.resolve_running_workload",
         lambda intent, hosts, **_kwargs: events.append((intent, tuple(hosts))) or target,
     )
 
@@ -1386,7 +1386,7 @@ def test_sglang_lifecycle_follows_materialized_capture_but_respects_explicit_art
         "sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts",
         lambda *args, **kwargs: SimpleNamespace(verified=True, snapshot_driver=driver, hardware={}),
     )
-    monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *args, **kwargs: plan.workload_id)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.resolve_running_workload", lambda *args, **kwargs: plan.workload_id)
 
     def invoke(self, request, **kwargs):
         assert request["artifact"] == str(expected)
@@ -3426,7 +3426,7 @@ def test_lifecycle_service_rejects_mismatched_job_or_capture(monkeypatch, tmp_pa
     artifact.write_text(json.dumps({"kind": "coldsnap-snapshot-artifact", "capture_id": "capture"}))
     target = "sparkrun_%s_%s" % (plan.intent_id, "d" * 12)
     monkeypatch.setattr("sparkrun.plugins.coldsnap.service.verify_coldsnap_hosts", lambda *_, **__: SimpleNamespace(snapshot_driver="n610"))
-    monkeypatch.setattr("sparkrun.api._resolve.discover_cluster_id_by_intent", lambda *_, **__: target)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.service.resolve_running_workload", lambda *_, **__: target)
     monkeypatch.setattr(ColdSnapService, "_invoke", lambda *_, **__: pytest.fail("mismatched lifecycle invoked controller"))
     with pytest.raises(RuntimeError, match="different job|activation receipt"):
         ColdSnapService().execute_lifecycle(

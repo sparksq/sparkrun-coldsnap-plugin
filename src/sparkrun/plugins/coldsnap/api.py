@@ -11,7 +11,7 @@ LIFECYCLE_API_VERSION = 1
 
 def control_job(operation: str, job, *, sctx):
     import sparkrun.api as api
-    from sparkrun.core.recipe import Recipe
+    from sparkrun.plugins import Recipe
     from sparkrun.plugins.coldsnap.service import ColdSnapService
 
     if operation not in {"status", "sleep", "wake"}:

@@ -17,7 +17,7 @@ from collections.abc import Sequence, Callable, Mapping
 from pathlib import Path
 from typing import Any, TypeGuard
 
-from sparkrun.core.timing import Timeline
+from sparkrun.plugins import Timeline
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MAX_CLOCKS = 128

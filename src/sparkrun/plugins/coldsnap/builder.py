@@ -29,11 +29,11 @@ import re
 from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
-from sparkrun.builders.base import BuilderPlugin
 from .feedback import progress as report_progress
 from sparkrun.core.progress import progress_heartbeat
 from sparkrun.orchestration.primitives import run_script_on_host, run_script_on_host_streaming
 from sparkrun.orchestration.ssh import run_rsync, should_run_locally
+from sparkrun.plugins import BuilderPlugin
 from sparkrun.plugins.coldsnap.git_sources import clone_pinned_source
 from sparkrun.plugins.coldsnap.tool import DEFAULT_CONTROLLER_COMMIT, DEFAULT_CONTROLLER_VERSION
 from sparkrun.utils.shell import quote

@@ -16,12 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from sparkrun.core.config import resolve_hf_token, resolve_sparkrun_cache_dir
 from sparkrun.orchestration.primitives import build_ssh_kwargs
 from sparkrun.plugins.coldsnap.artifacts import ArtifactStore, remove_artifact_store, resolve_artifact_store
 from sparkrun.plugins.coldsnap.oci_artifacts import default_artifact_publish_reference, delete_oci_tag
 from sparkrun.plugins.coldsnap.policy import resolve_coldsnap_policy
-from sparkrun.transports import open_cluster_host_session, prepare_cluster_transport
+from sparkrun.plugins import open_cluster_host_session, prepare_cluster_transport, resolve_hf_token, resolve_sparkrun_cache_dir
 
 logger = logging.getLogger(__name__)
 _DRIVERS = ("n580", "n610")
