@@ -512,12 +512,10 @@ def _run_materialization_workload(options, *, plan, sctx, description):
     import click
 
     import sparkrun.api as api
-    from sparkrun.orchestration.job_metadata import generate_cluster_id, generate_placement_token
 
-    token = generate_placement_token()
-    workload_id = generate_cluster_id(plan.intent_id, token)
-    plan = replace(plan, workload_id=workload_id, placement_token=token)
-    options = replace(options, workload_id_override=workload_id, detached=True, follow=False)
+    plan = api.fresh_workload_id(plan)
+    workload_id = plan.workload_id
+    options = replace(options, detached=True, follow=False)
     failure = None
     try:
         result = api.run(options, plan=plan, sctx=sctx)

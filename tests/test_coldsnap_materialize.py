@@ -85,7 +85,7 @@ def test_temporary_runs_allocate_ids_before_launch_without_changing_artifact_ide
     ids, stops = [], []
 
     def run(actual, *, plan, sctx):
-        assert actual.workload_id_override == plan.workload_id
+        assert actual.workload_id_override is None
         assert not actual.follow and actual.detached
         assert plan.intent_id == "b" * 16
         assert plan.recipe is options.recipe

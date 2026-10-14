@@ -101,48 +101,17 @@ def replace_capture_workload(*, plan, sctx) -> tuple[str, ...]:
     would make rank 0 fail its service-port bind and leave rank 1 waiting for
     the full capture timeout.
 
-    Mirrors the core eviction policy through public ``sparkrun.api`` calls:
-    same intent only, only deployments overlapping the capture hosts, each torn
-    down across every candidate host it occupies, and the plan's own
-    ``workload_id`` included (capture never runs the runtime's same-ID
-    cleanup). Strict: an unverifiable status or teardown aborts the capture.
+    Delegates to ``api.replace_intent_deployments`` with its defaults: strict
+    (an unverifiable status or teardown raises ``SparkrunError`` and aborts the
+    capture) and including the plan's own ``workload_id``, since capture never
+    runs the runtime's same-ID cleanup.
     """
     import sparkrun.api as api
 
-    candidate_hosts = list(plan.candidate_hosts)
-    try:
-        status = api.status(candidate_hosts, cluster=plan.cluster, sctx=sctx)
-    except Exception as error:
-        raise RuntimeError("could not query cluster status before workload replacement: %s" % error) from error
-    if status.observation_errors:
-        raise RuntimeError("could not query cluster status before workload replacement: %s" % status.observation_errors)
-    match = api.find_running_intent(plan.intent_id, candidate_hosts, cluster=plan.cluster, sctx=sctx, status=status)
-    if match is None:
-        return ()
-    matched = {match.workload_id, *match.other_cluster_ids}
-    targets = set(plan.host_list)
-    occupied: dict[str, list[str]] = {}
-    for entry in status.hosts:
-        for workload in entry.workloads:
-            if workload.cluster_id in matched:
-                hosts = occupied.setdefault(workload.cluster_id, [])
-                if entry.host not in hosts:
-                    hosts.append(entry.host)
-    evicted: list[str] = []
-    for workload_id, hosts in occupied.items():
-        if targets.isdisjoint(hosts):
-            continue
-        logger.info("ColdSnap: replacing earlier deployment %s on %s", workload_id, ", ".join(hosts))
-        try:
-            result = api.stop(workload_id=workload_id, hosts=hosts, cluster=plan.cluster, discovered=status, sctx=sctx)
-        except Exception as error:
-            raise RuntimeError("could not stop earlier deployment %s: %s" % (workload_id, error)) from error
-        if result.hosts_failed:
-            raise RuntimeError("teardown of earlier deployment %s was not confirmed on %s" % (workload_id, ", ".join(result.hosts_failed)))
-        evicted.append(workload_id)
+    evicted = api.replace_intent_deployments(plan, sctx=sctx)
     if evicted:
         report_progress(logger, "capture.replace", "ColdSnap: replaced %d active workload(s) before capture", len(evicted), sctx=sctx)
-    return tuple(evicted)
+    return evicted
 
 
 def resolve_running_workload(intent_id: str, hosts, *, cluster, sctx) -> str:

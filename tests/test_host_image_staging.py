@@ -116,57 +116,43 @@ def _status(hosts, *, errors=None):
 
 
 def test_capture_replaces_overlapping_deployments_of_its_intent_only(monkeypatch):
-    from dataclasses import replace
-
     import sparkrun.api as api
+    from sparkrun.plugins.coldsnap import service
     from sparkrun.plugins.coldsnap.service import replace_capture_workload
 
     _, _, plan, sctx = _setup()
-    plan = replace(plan, candidate_hosts=("h1", "h2", "h3"), host_list=("h1", "h2"))
     previous = "sparkrun_%s_%s" % (plan.intent_id, "e" * 12)
-    elsewhere = "sparkrun_%s_%s" % (plan.intent_id, "f" * 12)
-    foreign = "sparkrun_%s_%s" % ("9" * 16, "e" * 12)
-    status = _status(
-        {
-            "h1": [(plan.workload_id, plan.intent_id), (foreign, "9" * 16)],
-            "h2": [(previous, None), (plan.workload_id, plan.intent_id)],
-            "h3": [(previous, None), (elsewhere, plan.intent_id)],
-        }
-    )
-    stops = []
-    monkeypatch.setattr(api, "status", lambda hosts, **kwargs: status if hosts == ["h1", "h2", "h3"] else pytest.fail(hosts))
+    calls, progress = [], []
 
-    def stop(**kwargs):
-        stops.append(kwargs)
-        return SimpleNamespace(hosts_failed=())
+    def replace_intent_deployments(actual, **kwargs):
+        calls.append((actual, kwargs))
+        return (plan.workload_id, previous)
 
-    monkeypatch.setattr(api, "stop", stop)
-    # The plan's own id is replaced too: capture never runs the runtime's
-    # same-ID cleanup. A disjoint deployment and a foreign intent survive.
+    monkeypatch.setattr(api, "replace_intent_deployments", replace_intent_deployments)
+    monkeypatch.setattr(service, "report_progress", lambda *args, **kwargs: progress.append(args))
+    # The replacement policy (same intent, overlap, strictness, own id
+    # included) is the core seam's; capture relies on its defaults.
     assert replace_capture_workload(plan=plan, sctx=sctx) == (plan.workload_id, previous)
-    assert [(call["workload_id"], call["hosts"]) for call in stops] == [
-        (plan.workload_id, ["h1", "h2"]),
-        (previous, ["h2", "h3"]),
-    ]
-    assert all(call["discovered"] is status and call["cluster"] is plan.cluster for call in stops)
+    assert calls == [(plan, {"sctx": sctx})]
+    assert [args[1] for args in progress] == ["capture.replace"]
+
+    progress.clear()
+    monkeypatch.setattr(api, "replace_intent_deployments", lambda *_a, **_kw: ())
+    assert replace_capture_workload(plan=plan, sctx=sctx) == ()
+    assert progress == []
 
 
-@pytest.mark.parametrize("failure", ["query", "observation", "teardown"])
-def test_capture_replacement_is_strict(monkeypatch, failure):
+def test_capture_replacement_is_strict(monkeypatch):
     import sparkrun.api as api
     from sparkrun.plugins.coldsnap.service import replace_capture_workload
 
     _, _, plan, sctx = _setup()
-    status = _status({"h1": [(plan.workload_id, plan.intent_id)], "h2": []}, errors={"h2": "down"} if failure == "observation" else None)
 
-    def query(*_args, **_kwargs):
-        if failure == "query":
-            raise OSError("ssh refused")
-        return status
+    def refuse(*_args, **_kwargs):
+        raise api.SparkrunError("teardown of earlier deployment x was not confirmed on h1")
 
-    monkeypatch.setattr(api, "status", query)
-    monkeypatch.setattr(api, "stop", lambda **_kwargs: SimpleNamespace(hosts_failed=("h1",)))
-    with pytest.raises(RuntimeError, match="could not query|not confirmed on h1"):
+    monkeypatch.setattr(api, "replace_intent_deployments", refuse)
+    with pytest.raises(api.SparkrunError, match="not confirmed on h1"):
         replace_capture_workload(plan=plan, sctx=sctx)
 
 

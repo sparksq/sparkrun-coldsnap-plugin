@@ -26,7 +26,7 @@ from sparkrun.core.recipe import Recipe
 from sparkrun.core.scheduler import RankAssignment, RankSlot
 from sparkrun.core.timing import Timeline
 from sparkrun.orchestration.comm_env import ClusterCommEnv
-from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
+from sparkrun.plugins import derive_recipe_fingerprint
 from sparkrun.plugins.coldsnap import register
 from sparkrun.plugins.coldsnap.artifacts import (
     DEFAULT_ARTIFACT_GENERATIONS,
@@ -1440,8 +1440,8 @@ def test_sglang_materialize_captures_and_verifies_without_write_behind(monkeypat
         assert options.strategy_options["materialize_native"] == "off"
         assert options.strategy_options["weights"] == ("recovery" if native == "off" else "native")
         events.append("verify")
-        assert options.workload_id_override == kwargs["plan"].workload_id != plan.workload_id
-        return SimpleNamespace(rc=0, workload_id=options.workload_id_override)
+        assert options.workload_id_override is None and kwargs["plan"].workload_id != plan.workload_id
+        return SimpleNamespace(rc=0, workload_id=kwargs["plan"].workload_id)
 
     def stop(**kwargs):
         assert kwargs["workload_id"] != plan.workload_id
