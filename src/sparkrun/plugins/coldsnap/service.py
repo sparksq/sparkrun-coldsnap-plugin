@@ -30,6 +30,7 @@ from sparkrun.core.execution import (
     PreparationStep,
     PreparedExecution,
 )
+from . import diagnostics
 from .feedback import reporter, progress as report_progress
 from sparkrun.core.timing import timed
 from sparkrun.plugins.coldsnap.environment import validate_environment_recipe
@@ -322,6 +323,25 @@ class ColdSnapService:
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise RuntimeError("read committed ColdSnap artifact %s: %s" % (artifact_path, error)) from error
+        diag = diagnostics.bind(sctx=context.sctx, workload_id=context.plan.cluster_id)
+        if diag is not None and diag.enabled:
+            diag.snapshot(
+                "artifact_selection",
+                lambda: {
+                    "artifact": str(artifact_path)[-512:],
+                    "kind": artifact.get("kind"),
+                    "state": artifact.get("state"),
+                    "selected_driver": snapshot_driver,
+                    "artifact_driver": artifact.get("snapshot_driver", {}).get("id"),
+                    "compatible": (
+                        artifact.get("kind") == "coldsnap-snapshot-artifact"
+                        and artifact.get("state") == "committed"
+                        and artifact.get("snapshot_driver", {}).get("id") == snapshot_driver
+                    ),
+                    "weight_mode": resolve_request_weight_mode(request),
+                },
+                stage="artifact_selection",
+            )
         if artifact.get("kind") != "coldsnap-snapshot-artifact" or artifact.get("state") != "committed":
             raise RuntimeError("ColdSnap artifact is not a committed snapshot: %s" % artifact_path)
         artifact_driver = artifact.get("snapshot_driver", {}).get("id")
@@ -1035,6 +1055,7 @@ class ColdSnapService:
         offline: bool | None = None,
     ):
         feedback = reporter(logger, sctx=sctx)
+        diag = diagnostics.bind(sctx=sctx, feedback=feedback)
         try:
             executable = binary or self.binary
             environment = None
@@ -1193,6 +1214,24 @@ class ColdSnapService:
                     )
                     if imported:
                         logger.debug("ColdSnap controller timing: imported %d span(s)", imported)
+                    if diag is not None and diag.enabled:
+                        diag.snapshot(
+                            "controller_result",
+                            lambda: {
+                                "operation": request["operation"],
+                                "request_id": request["id"],
+                                "prepare_only": prepare_only,
+                                "return_code": completed.returncode,
+                                "controller": controller_label[-512:],
+                                "snapshot_driver": snapshot_driver,
+                                "engine": request["launch"]["engine"],
+                                "units": len(request["launch"]["units"]),
+                                "receipt_present": receipt is not None,
+                                "imported_spans": imported,
+                                "stderr_tail": (getattr(completed, "stderr", "") or "")[-2048:],
+                            },
+                            stage=operation,
+                        )
                     if completed.returncode:
                         detail = str(getattr(completed, "stderr", "") or "").strip()
                         raise RuntimeError(
@@ -1206,7 +1245,18 @@ class ColdSnapService:
                         )
             feedback.progress("ColdSnap: %s completed" % operation, stage=operation, status="succeeded")
             return completed
-        except BaseException:
+        except BaseException as error:
+            if diag is not None and diag.enabled:
+                diag.snapshot(
+                    "execution_result",
+                    lambda error=error: {
+                        "operation": request["operation"],
+                        "prepare_only": prepare_only,
+                        "error_type": type(error).__name__,
+                        "detail": str(error)[-1024:],
+                    },
+                    stage=str(request["operation"]),
+                )
             feedback.report(
                 "ColdSnap: %s failed or interrupted" % request["operation"], level="error", stage=str(request["operation"]), status="failed"
             )

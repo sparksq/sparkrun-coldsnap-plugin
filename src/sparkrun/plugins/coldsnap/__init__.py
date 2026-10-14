@@ -54,6 +54,9 @@ def _register_recipe_registries() -> None:
 
 
 def register(v) -> None:
+    from .diagnostics import register as register_diagnostics
+
+    register_diagnostics()
     _register_recipe_registries()
     if hasattr(_plugin_api, "register_workload_lifecycle"):
         from .api import matches_job, control_job
