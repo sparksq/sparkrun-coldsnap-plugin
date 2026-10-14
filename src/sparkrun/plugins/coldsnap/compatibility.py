@@ -18,7 +18,7 @@ from sparkrun.core.progress import PROGRESS
 from sparkrun.orchestration.primitives import build_ssh_kwargs
 
 if TYPE_CHECKING:
-    from sparkrun.api._models import RunPlan
+    from sparkrun.api import RunPlan
     from sparkrun.core.context import SparkrunContext
 
 

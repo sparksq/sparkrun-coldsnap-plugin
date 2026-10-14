@@ -574,7 +574,7 @@ def _materialize(
     import click
 
     import sparkrun.api as api
-    from sparkrun.api._context import default_sctx
+    from sparkrun.api import default_sctx
     from sparkrun.core.timing import STATUS_ERROR
     from sparkrun.plugins.coldsnap.compatibility import verify_coldsnap_hosts
 
@@ -736,7 +736,7 @@ def _delete(recipe, cluster, hosts, *, scope, driver, native_revision, yes, dry_
     import click
 
     import sparkrun.api as api
-    from sparkrun.api._context import default_sctx
+    from sparkrun.api import default_sctx
     from sparkrun.plugins.coldsnap.deletion import build_deletion_plan, execute_deletion_plan
 
     sctx = default_sctx()
@@ -805,7 +805,7 @@ def _run(
     import click
 
     import sparkrun.api as api
-    from sparkrun.api._context import default_sctx
+    from sparkrun.api import default_sctx
     from sparkrun.core.timing import STATUS_ERROR
 
     sctx = default_sctx()

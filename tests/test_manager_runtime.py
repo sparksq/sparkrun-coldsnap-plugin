@@ -359,7 +359,7 @@ def test_relay_feedback_crosses_manager_callback_thread(monkeypatch):
     from types import SimpleNamespace
     from sparkrun.core.operation import OperationState, operation_scope
     from sparkrun.core import image_distribution as images
-    from sparkrun.feedback import get_feedback
+    from sparkrun.plugins import get_feedback
     from sparkrun.plugins.oci_relay.progress import Progress
 
     seen = []

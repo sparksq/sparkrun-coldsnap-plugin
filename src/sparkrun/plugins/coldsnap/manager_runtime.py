@@ -12,7 +12,7 @@ import json
 from collections.abc import Mapping
 from typing import Any, Protocol
 
-from sparkrun.core.image_distribution import (
+from sparkrun.plugins import (
     has_image_distribution_provider,
     image_distribution_operation,
     resolve_distributed_image,

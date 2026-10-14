@@ -12,13 +12,8 @@ import json
 from pathlib import Path, PurePosixPath
 
 import sparkrun.api as api
-from sparkrun.core.env_templates import (
-    LAUNCH_FIELDS,
-    env_template_launch_fields,
-    probe_model_path,
-    render_env_template,
-    workload_model_path,
-)
+from sparkrun.core.env_templates import LAUNCH_FIELDS, probe_model_path, workload_model_path
+from sparkrun.plugins import env_template_launch_fields, render_env_template
 from sparkrun.orchestration.primitives import build_ssh_kwargs
 from sparkrun.plugins.coldsnap.artifacts import _read_committed_artifact
 from sparkrun.plugins.coldsnap.runtime_cache import CANONICAL_RUNTIME_CACHE_ROOT

@@ -167,7 +167,7 @@ class ColdSnapHostProvider:
             config = copy(config)
             config.ssh_user = cluster.user
         ssh_kwargs = build_ssh_kwargs(config)
-        from sparkrun.feedback import get_feedback
+        from sparkrun.plugins import get_feedback
 
         feedback = get_feedback("coldsnap", sctx=sctx)
         factory = session_factory or open_cluster_host_session
