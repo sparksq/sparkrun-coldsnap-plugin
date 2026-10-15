@@ -49,7 +49,7 @@ jobs:
         working-directory: .
 
       - name: Install
-        run: uv pip install --system -e . --group dev 'sparkrun @ git+https://github.com/spark-arena/sparkrun.git@0d53e22b0035fc464b4a81b18503afe0de04e490'
+        run: uv pip install --system -e . --group dev 'sparkrun @ git+https://github.com/spark-arena/sparkrun.git@12cb979cc350873dbc08dce4b1009081b7100e42'
         working-directory: .
 
       - name: Run tests
