@@ -367,6 +367,10 @@ def follow_operation_timing_events(
     """Follow a controller-owned append-only stream until the caller stops it."""
     stream = OperationTimingEventStream(request, on_event=on_event)
     file = None
+    # A writer appends its last events and then sets ``stop``; our previous read
+    # may have reached EOF just before that append. One more pass after seeing
+    # ``stop`` reads them instead of dropping the end of the stream.
+    drained_after_stop = False
     try:
         while True:
             if file is None:
@@ -391,7 +395,10 @@ def follow_operation_timing_events(
                 stream.accept(line[:-1])
                 continue
             if stop.is_set():
-                break
+                if drained_after_stop:
+                    break
+                drained_after_stop = True
+                continue
             time.sleep(0.05)
     finally:
         if file is not None:

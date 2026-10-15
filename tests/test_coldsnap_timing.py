@@ -390,3 +390,31 @@ def test_service_streams_progress_events_without_timing_table():
 
     assert result.returncode == 0
     assert "--timing-events" in observed
+
+
+def test_events_appended_just_before_stop_are_not_dropped(tmp_path):
+    """The writer appends its last events and then stops; the follower must still read them."""
+    request = _request()
+    receipt = _receipt(request)
+    events = _timing_events(receipt)
+    path = tmp_path / "timing.ndjson"
+    path.write_text("".join(json.dumps(event) + "\n" for event in events[:4]), encoding="utf-8")
+
+    class StopAfterAppend:
+        """Appends the remaining events at the moment the follower first checks ``stop``."""
+
+        def __init__(self):
+            self.appended = False
+
+        def is_set(self):
+            if not self.appended:
+                with path.open("a", encoding="utf-8") as output:
+                    output.write("".join(json.dumps(event) + "\n" for event in events[4:]))
+                self.appended = True
+            return True
+
+        def wait(self, timeout=None):
+            return True
+
+    stream = follow_operation_timing_events(path, request, StopAfterAppend())
+    stream.finish(receipt)
